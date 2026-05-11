@@ -39,6 +39,9 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+google.json
+*-firebase-adminsdk-*.json
+gcloud-application-credentials.json
 *.pem
 *.p12
 *.pfx
