@@ -64,6 +64,14 @@ const register = (req, res, next) => {
       password: passwordRequired,
       confirmPassword: confirmPasswordRequired(),
       emailOtp: stringRequired,
+      mobileNumber: Joi.string()
+        .pattern(/^\d+$/)
+        .min(8)
+        .max(15)
+        .required(),
+      countryCode: Joi.string()
+        .pattern(/^\+\d+$/)
+        .required(),
     });
     if (isValid) {
       return next();

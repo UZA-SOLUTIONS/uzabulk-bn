@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { Button, FormGroup } from "reactstrap";
 import { Formik, Form, Field, ErrorMessage } from "formik";
 import * as Yup from "yup";
@@ -17,6 +17,8 @@ const Signup = ({ handleClose }) => {
   const dispatch = useDispatch();
   const [emailOtpSent, setEmailOtpSent] = useState(false);
   const [emailVerified, setEmailVerified] = useState(false);
+  /** Formik can drop `emailOtp` when the field is hidden; backend still needs it on register. */
+  const verifiedEmailOtpRef = useRef("");
 
   const initialValues = {
     email: "",
@@ -51,7 +53,8 @@ const Signup = ({ handleClose }) => {
           .required("Confirm Password is required"),
         mobileNumber: Yup.string()
           .matches(/^\d+$/, "Mobile number must contain only digits")
-          .min(10, "Mobile number must be at least 10 digits long")
+          .min(8, "Enter a valid mobile number (at least 8 digits)")
+          .max(15, "Mobile number is too long")
           .required("Mobile number is required"),
         countryCode: Yup.string()
           .matches(
@@ -102,7 +105,7 @@ const Signup = ({ handleClose }) => {
       email: data.email,
       password: data.password,
       confirmPassword: data.confirmPassword,
-      emailOtp: data.emailOtp,
+      emailOtp: String(data.emailOtp || verifiedEmailOtpRef.current || "").trim(),
       mobileNumber: data.mobileNumber,
       countryCode: data.countryCode,
     };
@@ -139,16 +142,20 @@ const Signup = ({ handleClose }) => {
           };
 
           const v = form.values;
+          const otpForRegister = String(
+            v.emailOtp || verifiedEmailOtpRef.current || ""
+          ).trim();
+          const mob = String(v.mobileNumber || "").replace(/\D/g, "");
           const registerReady =
             emailVerified &&
             !form.isSubmitting &&
             Boolean(v.email?.trim()) &&
-            Boolean(v.emailOtp?.trim()) &&
+            Boolean(otpForRegister) &&
             Boolean(v.countryCode && /^\+\d+$/.test(v.countryCode)) &&
             Boolean(
-              v.mobileNumber &&
-                /^\d+$/.test(v.mobileNumber) &&
-                v.mobileNumber.length >= 10
+              mob.length >= 8 &&
+                mob.length <= 15 &&
+                /^\d+$/.test(mob)
             ) &&
             Boolean(
               v.password &&
@@ -156,7 +163,7 @@ const Signup = ({ handleClose }) => {
                 /\d/.test(v.password) &&
                 /[a-zA-Z]/.test(v.password)
             ) &&
-            v.password === v.confirmPassword;
+            String(v.password || "").trim() === String(v.confirmPassword || "").trim();
 
           return (
             <Form>
@@ -169,6 +176,7 @@ const Signup = ({ handleClose }) => {
                       onClick={() => {
                         form.setFieldValue("email", "");
                         form.setFieldValue("emailOtp", "");
+                        verifiedEmailOtpRef.current = "";
                         setEmailOtpSent(false);
                         setEmailVerified(false);
                       }}
@@ -242,16 +250,21 @@ const Signup = ({ handleClose }) => {
                       <Button
                         type="button"
                         className="send-otp-btn"
-                        onClick={() =>
+                        onClick={() => {
+                          const otpSnap = String(form.values.emailOtp || "").trim();
                           verifyOtp(
                             {
-                              otp: form.values.emailOtp,
+                              otp: otpSnap,
                               email: form.values.email,
                               type: "email",
                             },
-                            setEmailVerified
-                          )
-                        }
+                            () => {
+                              verifiedEmailOtpRef.current = otpSnap;
+                              form.setFieldValue("emailOtp", otpSnap);
+                              setEmailVerified(true);
+                            }
+                          );
+                        }}
                         disabled={
                           !!form.errors?.emailOtp || !form.values.emailOtp
                         }

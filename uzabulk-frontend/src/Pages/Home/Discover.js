@@ -2,9 +2,8 @@ import React from "react";
 import { Row, Col } from "react-bootstrap";
 
 import NewArrivalProducts from "../../Components/Home/NewArrivalProducts";
-import BestDealsDiscover from "../../Components/Home/BestDealsDiscover";
-import OftenPurchasedCategories from "../../Components/Home/OftenPurchasedCategories";
-import CategoryCircleSlider from "../../Components/Home/CategoryCircleSlider";
+import DiscoverBrowseProducts from "../../Components/Home/DiscoverBrowseProducts";
+import SourceByCategory from "../../Components/Home/SourceByCategory";
 
 const Discover = () => {
   return (
@@ -12,8 +11,7 @@ const Discover = () => {
       <Row className="g-3 align-items-stretch">
         <Col lg={12}>
           <div className="discover_group_block px-3 w-100">
-            <CategoryCircleSlider />
-            <OftenPurchasedCategories />
+            <SourceByCategory />
           </div>
         </Col>
       </Row>
@@ -22,10 +20,9 @@ const Discover = () => {
           <NewArrivalProducts />
         </Col>
       </Row>
-
       <Row className="g-3 align-items-stretch">
         <Col lg={12} md={12} className="d-flex">
-          <BestDealsDiscover />
+          <DiscoverBrowseProducts />
         </Col>
       </Row>
     </>

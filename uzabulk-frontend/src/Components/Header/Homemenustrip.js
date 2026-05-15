@@ -1,35 +1,23 @@
 import React from "react";
-import { NavLink } from "react-router-dom";
 import { Container } from "react-bootstrap";
-import ROUTES from "../../helpers/routesHelper";
 import ItemCategory from "./Items/ItemCategory";
+import UserAuthCard from "./UserAuthCard";
 
 const Homemenustrip = ({ inline = false }) => {
   const Wrapper = inline ? React.Fragment : Container;
-  const wrapperProps = inline ? {} : { className: "d-flex align-items-center justify-content-between" };
+  const wrapperProps = inline
+    ? {}
+    : { fluid: true, className: "header-mockup-container px-3 px-sm-4 px-xl-5" };
 
   return (
-    <div className="home_strip">
+    <div className="home_strip home_strip--mockup">
       <Wrapper {...wrapperProps}>
-        <ul className="homeMenu_list m-0 p-0 d-flex align-items-center">
-          <ItemCategory />
-
-          <li>
-            <NavLink to={`${ROUTES.PRODUCT_LISTING}?skip=1`}>All Products</NavLink>
-          </li>
-
-          <li>
-            <NavLink to={ROUTES.BLOG}>Blog</NavLink>
-          </li>
-
-          <li>
-            <NavLink to={ROUTES.ABOUT_US}>About</NavLink>
-          </li>
-
-          <li>
-            <NavLink to={ROUTES.CONTACT_US}>Contact</NavLink>
-          </li>
-        </ul>
+        <div className="header-mockup-bottom-row">
+          <ul className="homeMenu_list homeMenu_list--mockup m-0 p-0 d-flex align-items-center">
+            <ItemCategory catalogTrigger="grid" />
+          </ul>
+          <UserAuthCard navbarPlacement="mockupBottom" />
+        </div>
       </Wrapper>
     </div>
   );

@@ -314,6 +314,21 @@ label {
   }
 }
 
+/* Home: Source by category carousel */
+@media (max-width: 767.98px) {
+  .home_source_by_category__arrow {
+    width: 44px;
+    height: 44px;
+  }
+
+  .home_source_by_category__track {
+    padding-left: 50px;
+    padding-right: 50px;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
 @media (max-width: 575.98px) {
   .often_category_col {
     padding-left: 4px;

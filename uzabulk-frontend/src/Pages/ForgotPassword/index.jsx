@@ -8,11 +8,10 @@ import SendOtpComponent from "./SendOtpComponent";
 import VerifyOtpComponent from "./VerifyOtpComponent";
 import ResetPasswordComponent from "./ResetPasswordComponent";
 
-import { APP_NAME } from "../../config/constants";
+import { APP_NAME, BRAND_LOGO_PNG } from "../../config/constants";
 import ROUTES from "../../helpers/routesHelper";
 import { clearForgotPasswordState } from "../../store/auth/slice";
 
-import Logo from "../../assets/images/dark_logo.svg";
 
 const ForgotPassword = () => {
   const dispatch = useDispatch();
@@ -51,7 +50,7 @@ const ForgotPassword = () => {
             className="logo_here cursor-pointer"
             onClick={() => navigate("/")}
           >
-            <img src={Logo} alt="" className="img-fluid" />
+            <img src={BRAND_LOGO_PNG} alt="" className="img-fluid" />
           </div>
           <h2>
             Welcome <br /> <span>To the website</span>

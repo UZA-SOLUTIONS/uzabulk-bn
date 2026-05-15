@@ -1,40 +1,41 @@
-import React, { useState } from "react";
-import { Container } from "react-bootstrap";
-import { useNavigate } from "react-router-dom";
+import React, { useEffect, useState } from "react";
 
-import ProductSearch from "../../Components/Common/ProductSearch";
-import ROUTES from "../../helpers/routesHelper";
+const HERO_IMAGES = ["/bg1.jpg", "/bg2.jpg", "/bg3.jpg", "/bg4.jpg"];
+const SLIDE_MS = 5500;
 
 const Homebanner = () => {
-  const [searchText, setSearchText] = useState("");
-  const navigate = useNavigate();
+  const [activeIndex, setActiveIndex] = useState(0);
 
-  const handleSubmit = (event) => {
-    event.preventDefault();
-    const trimmed = (searchText || "").trim();
-    if (!trimmed) return;
-    navigate(`${ROUTES.PRODUCT_LISTING}?search=${encodeURIComponent(trimmed)}&skip=1`);
-  };
+  useEffect(() => {
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    if (reducedMotion.matches) return undefined;
+    const id = window.setInterval(() => {
+      setActiveIndex((i) => (i + 1) % HERO_IMAGES.length);
+    }, SLIDE_MS);
+    return () => window.clearInterval(id);
+  }, []);
 
   return (
-    <section className="home_alibaba_hero position-relative">
-      <Container>
-        <div className="home_alibaba_hero_inner home_alibaba_hero_shell text-center">
-          <div className="home_alibaba_welcome text-white mb-2">
-            <h5 className="text-white mb-0 fw-semibold">Find wholesale products in seconds</h5>
-          </div>
-          <form className="home_alibaba_search position-relative" onSubmit={handleSubmit}>
-            <ProductSearch
-              defaultValue={searchText}
-              placeholder="Search for products, brands, and more..."
-              callback={({ search }) => setSearchText(search || "")}
+    <section
+      className="home_alibaba_hero home_alibaba_hero--slideshow home_alibaba_hero--fullbleed position-relative"
+      aria-label="Homepage banner"
+    >
+      <div className="home_alibaba_hero_slideshow">
+        <div
+          className="home_alibaba_hero_slides"
+          style={{ transform: `translate3d(-${activeIndex * 100}%, 0, 0)` }}
+        >
+          {HERO_IMAGES.map((src) => (
+            <div
+              key={src}
+              className="home_alibaba_hero_slide"
+              style={{ backgroundImage: `url(${src})` }}
+              aria-hidden="true"
             />
-            <button type="submit" className="banner_search">
-              Search
-            </button>
-          </form>
+          ))}
         </div>
-      </Container>
+        <div className="home_alibaba_hero_header_overlay" aria-hidden="true" />
+      </div>
     </section>
   );
 };

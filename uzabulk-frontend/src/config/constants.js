@@ -1,5 +1,8 @@
 export const APP_NAME = "UZA Store";
 
+/** Brand mark from `public/newlogo.png` */
+export const BRAND_LOGO_PNG = `${process.env.PUBLIC_URL || ""}/newlogo.png`;
+
 export const CURRENCY_SYMBOL = "RWF ";
 
 export const CURRENCY_NAME = "";

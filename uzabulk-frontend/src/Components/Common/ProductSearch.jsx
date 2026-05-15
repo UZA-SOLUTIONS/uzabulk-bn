@@ -38,6 +38,7 @@ export default function ProductSearch({
     placeholder = "Search for Products Brands and more...",
     minChars = DEFAULT_MIN_CHARS,
     debounceMs = DEFAULT_DEBOUNCE_MS,
+    wrapperClassName = "",
 }) {
     const [value, setValue] = useState(defaultValue);
     const [items, setItems] = useState([]);
@@ -239,7 +240,9 @@ export default function ProductSearch({
                 }
             }}
             inputProps={{ placeholder, className: "form-control" }}
-            wrapperProps={{ className: "auto-complete-input" }}
+            wrapperProps={{
+                className: ["auto-complete-input", wrapperClassName].filter(Boolean).join(" "),
+            }}
         />
     );
 }

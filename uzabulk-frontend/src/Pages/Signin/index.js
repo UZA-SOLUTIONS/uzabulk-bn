@@ -9,12 +9,11 @@ import { Helmet } from "react-helmet";
 
 import PasswordField from "../../Components/Common/PasswordField";
 
-import { APP_NAME } from "../../config/constants";
+import { APP_NAME, BRAND_LOGO_PNG } from "../../config/constants";
 import ROUTES from "../../helpers/routesHelper";
 import { getCredentials, removeCredentials, saveCredentials } from "../../helpers/authHelper";
 import { apiLogin } from "../../store/auth/actions";
 
-import Logo from "../../assets/images/dark_logo.svg";
 import { ICON_USER } from "../../assets/svg";
 
 const Signin = () => {
@@ -96,7 +95,7 @@ const Signin = () => {
             className="logo_here cursor-pointer"
             onClick={() => navigate("/")}
           >
-            <img src={Logo} alt="" className="img-fluid" />
+            <img src={BRAND_LOGO_PNG} alt="" className="img-fluid" />
           </div>
           <h2>
             Welcome <br /> <span>To the website</span>

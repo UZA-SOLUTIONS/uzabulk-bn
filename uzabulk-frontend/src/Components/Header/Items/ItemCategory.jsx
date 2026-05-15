@@ -19,7 +19,7 @@ function supportsFineHover() {
   return window.matchMedia("(hover: hover) and (pointer: fine)").matches;
 }
 
-export default function ItemCategory() {
+export default function ItemCategory({ catalogTrigger = "hamburger" }) {
   const dispatch = useDispatch();
   const { level1, level2, level3 } = useSelector(
     (s) => s.categories.categories
@@ -214,7 +214,7 @@ export default function ItemCategory() {
         aria-expanded={showModal}
       >
         <span className="categories-nav-trigger__icon" aria-hidden>
-          {threebar}
+          {catalogTrigger === "grid" ? appsMenuGrid : threebar}
         </span>
         <span>All Categories</span>
       </button>
@@ -447,11 +447,23 @@ const threebar = (
   >
     <path
       fill="none"
-      stroke="#000"
+      stroke="currentColor"
       strokeLinecap="round"
       strokeWidth="2"
       d="M5 6h14M5 12h14M5 18h14"
     />
+  </svg>
+);
+
+const appsMenuGrid = (
+  <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" aria-hidden>
+    {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => {
+      const row = Math.floor(i / 3);
+      const col = i % 3;
+      const cx = 4 + col * 8;
+      const cy = 4 + row * 8;
+      return <circle key={i} cx={cx} cy={cy} r="1.75" fill="currentColor" />;
+    })}
   </svg>
 );
 
