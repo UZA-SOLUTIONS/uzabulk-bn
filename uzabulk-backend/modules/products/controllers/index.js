@@ -1,0 +1,1243 @@
+const Product = require('../services');
+const { processVariations } = require("../../../utils");
+const { enrichProductReviewsAndRatings } = require('../helper/ratings');
+const { isValidObjectId } = require('../../../validators/validator');
+const { priceExchange } = require('../../../helpers/helper');
+const productIndex = require('../../../elasticsearch/indexes/productIndex');
+const esProductService = require('../services/esProductService');
+const { getProductDetail, searchImageQuery } = require('../services/alibaba');
+const { searchGoogleImageKeywords } = require('../services/googleImageSearch');
+const { searchLocalImage, searchLocalImageLive } = require('../services/localImageSearch');
+const { updateProductDetails } = require('../helper/migration');
+const {
+    getRecommendedProducts,
+    getRotatedProductPage,
+    getHomeBrowseProductPage,
+    buildCatalogSeedKey,
+    trackProductBehavior,
+} = require('../services/recommendationService');
+const { runSmartListing, analyzeProductImage: analyzeImageAi } = require('../../ai/services/smartListingService');
+const { getSimilarProducts, ensureProductEmbedding } = require('../services/similarProductsService');
+const { ensureRelatedProducts } = require('../services/aiRecommendationService');
+const { searchCatalogByText } = require('../../ai/services/aiCatalogSearchHelper');
+const {
+    resolveImageSearchFromAi,
+    extractImageSearchKeywords,
+} = require('../../ai/services/aiImageSearchService');
+const { guessLocalImagePath } = require('../../ai/helpers/resolveVisionImageInput');
+const {
+    expandCategoryFilterIds,
+    buildMongoCategoryMatch,
+} = require('../services/categoryFilterHelper');
+
+const looksLikeObjectId = (value) => /^[a-fA-F0-9]{24}$/.test(String(value || "").trim());
+const escapeRegex = (value = "") => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const normalizeSearchText = (value = "") => String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
+
+const filterItemsBySearchTokens = (items = [], search = "") => {
+    const normalizedQuery = normalizeSearchText(search);
+    if (!normalizedQuery) return items;
+
+    const tokens = normalizedQuery.split(" ").filter(Boolean);
+    if (!tokens.length) return items;
+
+    return items.filter((item) => {
+        const haystack = normalizeSearchText(
+            [
+                item?.name,
+                item?.sku,
+                item?.slug,
+                item?.short_description,
+                item?.description,
+            ]
+                .filter(Boolean)
+                .join(" ")
+        );
+        return tokens.every((token) => haystack.includes(token));
+    });
+};
+
+const shouldRefreshSupplierProduct = (product) => {
+    if (!product?.offerId) return false;
+    if (!product.last_updated) return true;
+
+    const lastUpdated = new Date(product.last_updated);
+    if (Number.isNaN(lastUpdated.getTime())) return true;
+
+    const ageHours = (Date.now() - lastUpdated.getTime()) / (1000 * 60 * 60);
+    return ageHours >= 24;
+};
+
+const syncSupplierProductInBackground = (product) => {
+    const productId = product?._id;
+    const offerId = product?.offerId;
+    if (!productId || !offerId) return;
+
+    getProductDetail(offerId)
+        .then(async (productDetails) => {
+            if (productDetails && productDetails?.status && productDetails?.status !== "published") {
+                await module.exports.productArchived(productId);
+                return;
+            }
+
+            if (productDetails?.status === "published") {
+                await updateProductDetails(product, productDetails);
+            }
+        })
+        .catch((error) => {
+            console.warn(`Background product sync failed for offerId=${offerId}:`, error.message);
+        });
+};
+
+/** ES `productIndex.search` returns `{ items, total }`; older paths may still return a bare array. */
+const unwrapEsSearchResult = (result) => {
+    if (Array.isArray(result)) {
+        return { items: result, total: 0, tookMs: 0, timedOut: false };
+    }
+    const items = result?.items || [];
+    const total = typeof result?.total === "number" ? result.total : 0;
+    return {
+        items,
+        total,
+        tookMs: typeof result?.tookMs === "number" ? result.tookMs : 0,
+        timedOut: Boolean(result?.timedOut),
+    };
+};
+
+const getMongoListQuery = ({ category, fieldName, fieldValue, search, singleCategoryOnly = false } = {}) => {
+    const query = { status: "active" };
+
+    if (category && isValidObjectId(category)) {
+        query.categories = category;
+    }
+    if (singleCategoryOnly) {
+        query.$expr = { $eq: [{ $size: "$categories" }, 1] };
+    }
+    if (fieldName && fieldValue !== undefined && fieldValue !== null && String(fieldValue).trim() !== "") {
+        query[fieldName] = fieldValue;
+    }
+    if (search && String(search).trim()) {
+        const tokens = String(search)
+            .trim()
+            .split(/\s+/)
+            .map((token) => escapeRegex(token))
+            .filter(Boolean);
+        if (tokens.length) {
+            query.$and = tokens.map((token) => ({
+                name: { $regex: new RegExp(token, "i") },
+            }));
+        }
+    }
+
+    return query;
+};
+
+const normalizeFeaturedImageLink = (items = []) => items.map((item) => {
+    if (item?.featured_image?.link) {
+        return { ...item, featured_image: item.featured_image.link };
+    }
+    return item;
+});
+
+const getSeedHash = (key = "") => {
+    let hash = 0;
+    const str = String(key);
+    for (let i = 0; i < str.length; i += 1) {
+        hash = ((hash << 5) - hash) + str.charCodeAt(i);
+        hash |= 0;
+    }
+    return Math.abs(hash);
+};
+
+const getCategoryRepresentativeSkip = (categoryId, refresh = "", poolSize = 8) => {
+    const token = refresh || "0";
+    return (getSeedHash(`${categoryId}:${token}:img`) % poolSize) + 1;
+};
+
+const pickProductImageUrl = (product) => {
+    if (!product) return "";
+    if (typeof product?.featured_image === "string" && product.featured_image.trim()) {
+        return product.featured_image.trim();
+    }
+    if (product?.featured_image?.link) {
+        return String(product.featured_image.link).trim();
+    }
+    const first = Array.isArray(product?.images) ? product.images[0] : null;
+    if (typeof first === "string" && first.trim()) return first.trim();
+    if (first?.link) return String(first.link).trim();
+    return "";
+};
+
+const resolveCategoryIconUrl = async (categoryId) => {
+    const cat = await _model.Category.findById(categoryId)
+        .populate({ path: "catImage", select: "link -_id" })
+        .lean();
+    if (!cat) return "";
+    const img = cat.catImage;
+    if (typeof img === "string" && img.trim()) return img.trim();
+    if (img?.link) return String(img.link).trim();
+    return "";
+};
+
+const trimPaginationItems = (items = [], limit = 10) => {
+    const safeLimit = Math.max(1, Number(limit) || 10);
+    return {
+        items: items.slice(0, safeLimit),
+        hasMore: items.length > safeLimit,
+    };
+};
+
+const resolveActiveCatalogItems = async (items = []) => {
+    if (!Array.isArray(items) || !items.length) return [];
+
+    const mongoIds = [];
+    const offerIds = [];
+
+    items.forEach((item) => {
+        const mongoId = String(item?._id || "").trim();
+        const offerId = String(item?.offerId || "").trim();
+        if (looksLikeObjectId(mongoId)) {
+            mongoIds.push(mongoId);
+        }
+        if (offerId) {
+            offerIds.push(offerId);
+        }
+    });
+
+    if (!mongoIds.length && !offerIds.length) return [];
+
+    const orQuery = [];
+    if (mongoIds.length) {
+        orQuery.push({ _id: { $in: [...new Set(mongoIds)] } });
+    }
+    if (offerIds.length) {
+        orQuery.push({ offerId: { $in: [...new Set(offerIds)] } });
+    }
+
+    const activeProducts = await _model.Product.find({
+        status: "active",
+        $or: orQuery,
+    })
+        .select("_id offerId")
+        .lean();
+
+    if (!activeProducts.length) return [];
+
+    const byId = new Map();
+    const byOfferId = new Map();
+    activeProducts.forEach((product) => {
+        const id = String(product._id);
+        byId.set(id, product);
+        if (product.offerId) {
+            byOfferId.set(String(product.offerId), product);
+        }
+    });
+
+    const usedIds = new Set();
+    const resolved = [];
+
+    items.forEach((item) => {
+        const currentId = String(item?._id || "").trim();
+        const currentOfferId = String(item?.offerId || "").trim();
+
+        let matched = null;
+        if (looksLikeObjectId(currentId) && byId.has(currentId)) {
+            matched = byId.get(currentId);
+        } else if (currentOfferId && byOfferId.has(currentOfferId)) {
+            matched = byOfferId.get(currentOfferId);
+        }
+
+        if (!matched) return;
+
+        const resolvedId = String(matched._id);
+        if (usedIds.has(resolvedId)) return;
+        usedIds.add(resolvedId);
+
+        resolved.push({
+            ...item,
+            _id: resolvedId,
+            offerId: item?.offerId || matched?.offerId || "",
+        });
+    });
+
+    return resolved;
+};
+
+const imageProjection = {
+    name: 1,
+    price: 1,
+    bestSeller: 1,
+    compare_price: 1,
+    images: 1,
+    featured_image: 1,
+    average_rating: 1,
+    rating_count: 1,
+    short_description: 1,
+    manage_stock: 1,
+    stock_quantity: 1,
+    stock_status: 1,
+    isFeatured: 1,
+    date_created_utc: 1,
+    featureAttribute: 1,
+    offerId: 1,
+};
+
+const fetchCategoryThumbnailUrl = async (categoryId, refresh = "") => {
+    const categoryIds = await expandCategoryFilterIds(categoryId);
+    const match = { status: "active" };
+    const categoryMatch = buildMongoCategoryMatch(categoryIds);
+    if (categoryMatch) Object.assign(match, categoryMatch);
+
+    const poolSize = 12;
+    const primaryPage = getCategoryRepresentativeSkip(categoryId, refresh, poolSize);
+    const pages = [...new Set([
+        primaryPage,
+        ...Array.from({ length: Math.min(poolSize, 8) }, (_, i) => i + 1),
+    ])];
+
+    for (const page of pages) {
+        const offset = page - 1;
+        const products = await _model.Product.find(match)
+            .sort({ date_created_utc: -1, _id: -1 })
+            .skip(offset)
+            .limit(4)
+            .select(imageProjection)
+            .populate({ path: "featured_image", select: "link -_id" })
+            .lean();
+
+        for (const product of products) {
+            const url = pickProductImageUrl(product);
+            if (url) return url;
+        }
+    }
+
+    return resolveCategoryIconUrl(categoryId);
+};
+
+const mapProductsByOfferOrder = async (offerIds = []) => {
+    const uniq = [...new Set(
+        (offerIds || []).map((id) => String(id || "").trim()).filter(Boolean)
+    )];
+    if (!uniq.length) return [];
+
+    const found = await _model.Product.find({
+        status: "active",
+        offerId: { $in: uniq },
+    })
+        .select(imageProjection)
+        .populate({ path: "featured_image", select: "link -_id" })
+        .populate({ path: "variations", select: "-meta_data", options: { lean: true } })
+        .lean();
+
+    const byOffer = new Map(found.map((p) => [String(p.offerId), p]));
+    const items = [];
+    uniq.forEach((id) => {
+        const p = byOffer.get(id);
+        if (!p) return;
+        const img = p.featured_image;
+        items.push(
+            img && typeof img === "object" && img.link
+                ? { ...p, featured_image: img.link }
+                : { ...p }
+        );
+    });
+    return items;
+};
+
+module.exports = {
+    topRankingProductsOld: async (req, res) => {
+        try {
+
+            let query = { status: "active", };//isFeatured: true
+
+            let items = await Product.getTopRankingProducts(query, req.paginationOptions);
+            let total = await Product.countData(query);
+
+            return res.success(req.nextPageOptions(items, total));
+
+        } catch (error) {
+            console.error(error)
+            res.error(error)
+        }
+    },
+    newArrivalProductsOld: async (req, res) => {
+        try {
+
+            let query = { status: "active" };
+
+            let items = await Product.getNewArrivalsProducts(query, req.paginationOptions);
+            let total = await Product.countData(query);
+
+            return res.success(req.nextPageOptions(items, total));
+
+        } catch (error) {
+            res.error(error)
+        }
+    },
+    getSavingsSpotlightOld: async (req, res) => {
+        try {
+
+            let query = { status: "active" };
+
+            let items = await Product.getSavingsSpotlight(query, req.paginationOptions);
+            let total = await Product.countData(query);
+
+            return res.success(req.nextPageOptions(items, total));
+
+        } catch (error) {
+            res.error(error)
+        }
+    },
+    searchAutocomplete: async (req, res) => {
+        try {
+            const { search = "", category } = req.query;
+            const limit = Math.max(1, Math.min(parseInt(req.query?.limit, 10) || 10, 20));
+            const skip = Math.max(0, parseInt(req.query?.skip, 10) || 0);
+
+            if (!search)
+                return res.success("RECORD_FOUND", []);
+
+            let items = [];
+            try {
+                const aiSearch = await searchCatalogByText({
+                    search,
+                    limit,
+                    skip,
+                    category,
+                });
+                items = await resolveActiveCatalogItems(aiSearch.items);
+                items = normalizeFeaturedImageLink(items);
+            } catch (error) {
+                const mongoQuery = getMongoListQuery({ category, search });
+                items = await Product.getNewArrivalsProducts(mongoQuery, { limit, skip });
+                items = normalizeFeaturedImageLink(items);
+                items = filterItemsBySearchTokens(items, search);
+            }
+
+            if (search && items.length) {
+                trackProductBehavior(req, {
+                    eventType: "search",
+                    search,
+                    score: 1,
+                    metadata: { category, resultCount: items.length },
+                });
+            }
+
+            return res.success("RECORD_FOUND", items);
+
+        } catch (error) {
+            console.error(error);
+            res.error(error);
+        }
+    },
+    topRankingProducts: async (req, res) => {
+        try {
+
+            const { skip, limit } = req.paginationOptions;
+            let items = [];
+            let total = 0;
+            let hasMore;
+
+            try {
+                const { items: rawItems, total: esTotal } = unwrapEsSearchResult(
+                    await esProductService.filter({
+                        limit,
+                        skip,
+                        sort: {
+                            average_rating: {
+                                order: "desc"
+                            }
+                        }
+                    })
+                );
+                items = await resolveActiveCatalogItems(rawItems);
+                total = esTotal;
+            } catch (error) {
+                const mongoQuery = { status: "active" };
+                const page = trimPaginationItems(
+                    await Product.getTopRankingProducts(mongoQuery, { ...req.paginationOptions, limit: limit + 1 }),
+                    limit
+                );
+                items = page.items;
+                hasMore = page.hasMore;
+                total = skip + items.length + (hasMore ? 1 : 0);
+                items = normalizeFeaturedImageLink(items);
+            }
+
+            await priceExchange(items, req.exchangeRate);
+            return res.success(req.nextPageOptions(items, total, { hasMore }));
+
+        } catch (error) {
+            console.error(error)
+            res.error(error)
+        }
+    },
+    newArrivalProducts: async (req, res) => {
+        try {
+
+            const { skip, limit } = req.paginationOptions;
+            const { search, category, refresh } = req.query;
+            let items = [];
+            let total = 0;
+            let hasMore;
+
+            if (!search && !category) {
+                const catalogPage = Math.max(1, Number(req.query.skip) || 1);
+                const seedKey = `${buildCatalogSeedKey(req, refresh)}:arrivals`;
+                const rotated = await getRotatedProductPage({
+                    limit,
+                    page: catalogPage,
+                    category: null,
+                    seedKey,
+                });
+                items = rotated.items;
+                hasMore = rotated.hasMore;
+                total = rotated.total;
+            } else {
+                try {
+                    const { items: rawItems, total: esTotal } = unwrapEsSearchResult(
+                        await esProductService.filter({
+                            limit,
+                            skip,
+                            search,
+                            category,
+                            sort: {
+                                date_created_utc: {
+                                    order: "desc"
+                                }
+                            }
+                        })
+                    );
+                    items = await resolveActiveCatalogItems(rawItems);
+                    total = esTotal;
+                } catch (error) {
+                    const mongoQuery = getMongoListQuery({ category, search });
+                    const page = trimPaginationItems(
+                        await Product.getNewArrivalsProducts(mongoQuery, { ...req.paginationOptions, limit: limit + 1 }),
+                        limit
+                    );
+                    items = page.items;
+                    hasMore = page.hasMore;
+                    total = skip + items.length + (hasMore ? 1 : 0);
+                    items = normalizeFeaturedImageLink(items);
+                }
+            }
+
+            await priceExchange(items, req.exchangeRate);
+            return res.success(req.nextPageOptions(items, total, { hasMore }));
+
+        } catch (error) {
+            res.error(error)
+        }
+    },
+    getSavingsSpotlight: async (req, res) => {
+        try {
+            const { skip, limit } = req.paginationOptions;
+            const { search, category } = req.query;
+            let items = [];
+            let total = 0;
+            let hasMore;
+
+            try {
+                const { items: rawItems, total: esTotal } = unwrapEsSearchResult(
+                    await esProductService.filter({
+                        limit,
+                        skip,
+                        search,
+                        category,
+                        sort: {
+                            price: {
+                                order: "asc"
+                            }
+                        }
+                    })
+                );
+                items = await resolveActiveCatalogItems(rawItems);
+                total = esTotal;
+            } catch (error) {
+                const mongoQuery = getMongoListQuery({ category, search });
+                const page = trimPaginationItems(
+                    await Product.getSavingsSpotlight(mongoQuery, { ...req.paginationOptions, limit: limit + 1 }),
+                    limit
+                );
+                items = page.items;
+                hasMore = page.hasMore;
+                total = skip + items.length + (hasMore ? 1 : 0);
+                items = normalizeFeaturedImageLink(items);
+            }
+
+            await priceExchange(items, req.exchangeRate);
+            return res.success(req.nextPageOptions(items, total, { hasMore }));
+
+        } catch (error) {
+            res.error(error)
+        }
+    },
+    viewOld: async (req, res) => {
+        try {
+            let { _id } = req.params;
+            let query = { _id, status: "active" };
+
+            let item = await Product.view(query);
+
+            if (!item) {
+                return res.error("INVALID_PRODUCT_ID");
+            };
+
+            item = processVariations(item);
+
+            return res.success(item);
+
+        } catch (error) {
+            console.log(error)
+            res.error(error)
+        }
+    },
+    /** Resolve catalog Mongo _id from 1688 offerId (numeric string stored on Product.offerId). */
+    viewByOfferId: async (req, res) => {
+        try {
+            const raw = String(req.params.offerId || "").trim();
+            if (!raw || raw.length > 32 || !/^\d+$/.test(raw)) {
+                return res.error("INVALID_PRODUCT_ID");
+            }
+            const offerIdCandidates = [raw];
+            const noLeadingZeros = raw.replace(/^0+(?=\d)/, "");
+            if (noLeadingZeros && noLeadingZeros !== raw) {
+                offerIdCandidates.push(noLeadingZeros);
+            }
+            const product = await _model.Product.findOne({
+                status: "active",
+                offerId: { $in: [...new Set(offerIdCandidates)] },
+            })
+                .select("_id")
+                .lean();
+            if (!product?._id) {
+                return res.error("INVALID_PRODUCT_ID");
+            }
+            return res.success({ _id: String(product._id) });
+        } catch (error) {
+            console.error(error);
+            res.error(error);
+        }
+    },
+    view: async (req, res) => {
+        try {
+            const productId = String(req.product?._id || req.params._id || "").trim();
+            let query = { _id: productId, status: "active" };
+
+            if (shouldRefreshSupplierProduct(req.product)) {
+                syncSupplierProductInBackground(req.product);
+            }
+
+            let item = await Product.view(query);
+
+            if (!item) {
+                return res.error("INVALID_PRODUCT_ID");
+            };
+
+            item = processVariations(item);
+            item = await enrichProductReviewsAndRatings(item);
+
+            const [similarProducts] = await Promise.all([
+                getSimilarProducts(productId, { limit: 8 }).catch(() => []),
+                ensureProductEmbedding(productId).catch((err) => {
+                    console.warn(`Embedding warmup failed for ${productId}:`, err?.message);
+                }),
+            ]);
+
+            if (similarProducts.length) {
+                item.similar_products = similarProducts;
+                item.related_products = similarProducts;
+                ensureRelatedProducts(productId, { limit: 8 }).catch((err) => {
+                    console.warn(`Related products persist failed for ${productId}:`, err?.message);
+                });
+            }
+
+            await priceExchange(item, req.exchangeRate);
+            await trackProductBehavior(req, {
+                product: item,
+                eventType: "view",
+                score: 1,
+            });
+            return res.success(item);
+
+        } catch (error) {
+            console.log(error)
+            res.error(error)
+        }
+    },
+    adminSellerProducts: async (req, res) => {
+        try {
+
+            let query = { status: "active", adminSold: true };
+            let { category } = req.query;
+
+            if (category) {
+                if (!isValidObjectId(category)) {
+                    return res.error("INVALID_CATEGORY_ID");
+                }
+                query.categories = category;
+            } else {
+                query.isFeatured = true;
+            };
+
+            let items = await Product.list(query, req.paginationOptions);
+            let total = await Product.countData(query);
+
+            return res.success(req.nextPageOptions(items, total));
+
+        } catch (error) {
+            console.error(error)
+            res.error(error)
+        }
+    },
+    listOld: async (req, res) => {
+        try {
+
+            let query = { status: "active" };
+            let { category, fieldName, fieldValue } = req.query;
+
+            if (category) {
+                if (!isValidObjectId(category)) {
+                    return res.error("INVALID_CATEGORY_ID");
+                }
+                query.categories = category;
+            }
+
+            if (fieldName && fieldValue) {
+                query[fieldName] = fieldValue;
+            }
+
+            let items = await Product.list(query, req.paginationOptions);
+            let total = await Product.countData(query);
+
+            return res.success(req.nextPageOptions(items, total));
+
+        } catch (error) {
+            console.error(error)
+            res.error(error)
+        }
+    },
+    list: async (req, res) => {
+        try {
+            const { category, fieldName, fieldValue, search, image, country, refresh, singleCategoryOnly } = req.query;
+            const { limit, skip } = req.paginationOptions;
+            const imageUrl = typeof image === "string" ? image.trim() : "";
+            const onlySingleCategory = singleCategoryOnly === "1" || singleCategoryOnly === "true";
+            const useRotatedBrowse =
+                !imageUrl
+                && !search
+                && !category
+                && !fieldName
+                && !fieldValue;
+
+            if (useRotatedBrowse) {
+                const catalogPage = Math.max(1, Number(req.query.skip) || 1);
+                const seedKey = `${buildCatalogSeedKey(req, refresh)}:browse`;
+                const rotated = await getHomeBrowseProductPage({
+                    limit,
+                    page: catalogPage,
+                    seedKey,
+                });
+                const categoryData = null;
+                await priceExchange(rotated.items, req.exchangeRate);
+                return res.success(req.nextPageOptions(rotated.items, rotated.total, {
+                    category: categoryData,
+                    hasMore: rotated.hasMore,
+                }));
+            }
+
+            if (imageUrl && !String(search || "").trim()) {
+                try {
+                    const aiImageResult = await resolveImageSearchFromAi({
+                        imageAddress: imageUrl,
+                        limit,
+                        skip,
+                        category,
+                        fieldName,
+                        fieldValue,
+                    });
+                    if (aiImageResult?.vision?.primaryKeyword) {
+                        let items = await resolveActiveCatalogItems(aiImageResult.items || []);
+                        items = items.slice(0, limit);
+                        const categoryData = category ? await _model.Category.findById(category) : null;
+                        await priceExchange(items, req.exchangeRate);
+                        return res.success(req.nextPageOptions(items, items.length ? 500 : 0, {
+                            category: categoryData,
+                            imageSearch: true,
+                            imageSearchProvider: "dashscope",
+                            imageSearchKeyword: aiImageResult.vision.primaryKeyword,
+                            imageSearchKeywords: aiImageResult.vision.keywords,
+                            imageSearchPhrase: aiImageResult.vision.searchPhrase,
+                        }));
+                    }
+                } catch (aiImageError) {
+                    console.warn("DashScope image search failed, using fallback:", aiImageError?.message || aiImageError);
+                }
+
+                let googleImageSearch = null;
+                try {
+                    googleImageSearch = await searchGoogleImageKeywords({
+                        imageAddress: imageUrl,
+                    });
+                } catch (googleError) {
+                    console.warn("Google image search failed:", googleError?.message || googleError);
+                }
+
+                if (googleImageSearch?.primaryKeyword) {
+                    const googleSearchQuery = {
+                        category,
+                        fieldName,
+                        fieldValue,
+                        search: googleImageSearch.primaryKeyword,
+                        limit,
+                        skip,
+                    };
+
+                    let googleRawItems = unwrapEsSearchResult(
+                        await esProductService.list(googleSearchQuery)
+                    ).items;
+
+                    // If first keyword is too narrow, enrich from additional keywords.
+                    if (googleRawItems.length < limit && Array.isArray(googleImageSearch.keywords)) {
+                        const seen = new Set(googleRawItems.map((item) => String(item?._id || item?.offerId || "")));
+                        for (const keyword of googleImageSearch.keywords.slice(1, 4)) {
+                            if (!keyword) continue;
+                            const { items: extra } = unwrapEsSearchResult(
+                                await esProductService.list({
+                                    ...googleSearchQuery,
+                                    search: keyword,
+                                    skip: 1,
+                                    limit,
+                                })
+                            );
+                            extra.forEach((item) => {
+                                const key = String(item?._id || item?.offerId || "");
+                                if (!key || seen.has(key)) return;
+                                seen.add(key);
+                                googleRawItems.push(item);
+                            });
+                            if (googleRawItems.length >= limit) break;
+                        }
+                    }
+
+                    let items = await resolveActiveCatalogItems(googleRawItems);
+                    items = items.slice(0, limit);
+
+                    const categoryData = category ? await _model.Category.findById(category) : null;
+                    await priceExchange(items, req.exchangeRate);
+
+                    return res.success(req.nextPageOptions(items, items.length ? 500 : 0, {
+                        category: categoryData,
+                        imageSearch: true,
+                        imageSearchProvider: "google",
+                        imageSearchKeyword: googleImageSearch.primaryKeyword,
+                        imageSearchKeywords: googleImageSearch.keywords,
+                    }));
+                }
+
+                const hasLocalUpload = Boolean(guessLocalImagePath(imageUrl));
+                const localImageSearch = hasLocalUpload
+                    ? null
+                    : await searchLocalImage({
+                        imageAddress: imageUrl,
+                        limit,
+                    });
+                if (localImageSearch?.offerIds?.length) {
+                    const items = await mapProductsByOfferOrder(localImageSearch.offerIds);
+                    const categoryData = category ? await _model.Category.findById(category) : null;
+                    await priceExchange(items, req.exchangeRate);
+                    return res.success(req.nextPageOptions(items.slice(0, limit), items.length, {
+                        category: categoryData,
+                        imageSearch: true,
+                        imageSearchProvider: "local",
+                    }));
+                }
+
+                // If prebuilt index is unavailable, run live local matching on a small candidate set.
+                const liveCandidates = await _model.Product.find({ status: "active" })
+                    .select("offerId name featured_image")
+                    .populate({ path: "featured_image", select: "link -_id" })
+                    .sort({ date_created_utc: -1 })
+                    .limit(120)
+                    .lean();
+                const localLive = hasLocalUpload
+                    ? null
+                    : await searchLocalImageLive({
+                        imageAddress: imageUrl,
+                        limit,
+                        candidates: liveCandidates.map((p) => ({
+                            offerId: p?.offerId,
+                            name: p?.name,
+                            imageUrl: typeof p?.featured_image === "string" ? p.featured_image : p?.featured_image?.link,
+                        })),
+                    });
+                if (localLive?.offerIds?.length) {
+                    const items = await mapProductsByOfferOrder(localLive.offerIds);
+                    const categoryData = category ? await _model.Category.findById(category) : null;
+                    await priceExchange(items, req.exchangeRate);
+                    return res.success(req.nextPageOptions(items.slice(0, limit), items.length, {
+                        category: categoryData,
+                        imageSearch: true,
+                        imageSearchProvider: "local",
+                    }));
+                }
+
+                const beginPage = Math.floor(skip / limit) + 1;
+                const imageCountry =
+                    typeof country === "string" && country.trim() ? country.trim() : "en";
+
+                let alibabaResult = null;
+                try {
+                    alibabaResult = await searchImageQuery({
+                        imageAddress: imageUrl,
+                        beginPage,
+                        pageSize: limit,
+                        country: imageCountry,
+                    });
+                } catch (alibabaError) {
+                    console.warn("1688 image search unavailable:", alibabaError?.message || alibabaError);
+                }
+
+                const rows = Array.isArray(alibabaResult?.data) ? alibabaResult.data : [];
+                const offerIds = rows
+                    .map((r) => String(r?.offerId ?? "").trim())
+                    .filter(Boolean);
+                let items = await mapProductsByOfferOrder(offerIds);
+
+                const totalRecords =
+                    typeof alibabaResult?.totalRecords === "number"
+                        ? alibabaResult.totalRecords
+                        : items.length;
+
+                await priceExchange(items, req.exchangeRate);
+                const categoryData = category ? await _model.Category.findById(category) : null;
+
+                const pageNum = Number(req.query.skip) || 1;
+                const total = totalRecords || 0;
+                const totalPages = limit > 0 ? Math.ceil(total / limit) : 0;
+                const hasMore = totalPages > 0 ? pageNum < totalPages : false;
+
+                return res.success({
+                    items,
+                    total,
+                    skip: pageNum,
+                    limit,
+                    totalPages: totalPages || 0,
+                    hasMore,
+                    others: { category: categoryData, imageSearch: true, imageSearchProvider: "alibaba" },
+                });
+            }
+
+            let items = [];
+            let total = 0;
+            let rawEsItems = [];
+            let esTotalHits = 0;
+            let esTookMs = 0;
+            let esTimedOut = false;
+            let usedElasticsearch = false;
+            let mongoHasMore;
+            let aiSearchMeta = null;
+
+            try {
+                let esPayload;
+                if (search) {
+                    const aiTextSearch = await searchCatalogByText({
+                        search,
+                        limit,
+                        skip,
+                        category,
+                        fieldName,
+                        fieldValue,
+                        singleCategoryOnly: onlySingleCategory,
+                    });
+                    esPayload = {
+                        items: aiTextSearch.items,
+                        total: aiTextSearch.total,
+                        tookMs: 0,
+                        timedOut: false,
+                        searchMeta: aiTextSearch.searchMeta,
+                    };
+                } else {
+                    esPayload = unwrapEsSearchResult(
+                        await esProductService.list({
+                            category, fieldName, fieldValue, search,
+                            limit, skip,
+                            singleCategoryOnly: onlySingleCategory,
+                        })
+                    );
+                }
+                rawEsItems = esPayload.items;
+                esTotalHits = esPayload.total;
+                esTookMs = esPayload.tookMs || 0;
+                esTimedOut = esPayload.timedOut || false;
+                items = await resolveActiveCatalogItems(rawEsItems);
+                const resolvedCount = items.length;
+                const hasMoreFromEs = skip + resolvedCount < esTotalHits;
+                total = hasMoreFromEs ? skip + resolvedCount + 1 : skip + resolvedCount;
+                usedElasticsearch = true;
+                aiSearchMeta = esPayload.searchMeta || null;
+            } catch (error) {
+                const mongoQuery = getMongoListQuery({
+                    category, fieldName, fieldValue, search, singleCategoryOnly: onlySingleCategory,
+                });
+                const page = trimPaginationItems(
+                    await Product.list(mongoQuery, { ...req.paginationOptions, limit: limit + 1 }),
+                    limit
+                );
+                items = page.items;
+                mongoHasMore = page.hasMore;
+                total = skip + items.length + (mongoHasMore ? 1 : 0);
+                items = normalizeFeaturedImageLink(items);
+                items = filterItemsBySearchTokens(items, search);
+            }
+
+            const categoryData = category ? await _model.Category.findById(category) : null;
+
+            await priceExchange(items, req.exchangeRate);
+            const listExtras = { category: categoryData };
+            if (imageUrl && String(search || "").trim()) {
+                listExtras.imageSearch = true;
+                listExtras.imageSearchProvider = "dashscope";
+                listExtras.imageSearchKeyword = String(search).trim();
+                listExtras.imageSearchPhrase = String(search).trim();
+                listExtras.imageUrl = imageUrl;
+            }
+            if (usedElasticsearch) {
+                listExtras.hasMore = skip + items.length < esTotalHits;
+                listExtras.searchMeta = {
+                    engine: "elasticsearch",
+                    latencyMs: esTookMs,
+                    timedOut: esTimedOut,
+                    ...(aiSearchMeta || {}),
+                };
+            } else if (typeof mongoHasMore === "boolean") {
+                listExtras.hasMore = mongoHasMore;
+                listExtras.searchMeta = {
+                    engine: "mongo_fallback",
+                };
+            }
+            if (search && items.length) {
+                trackProductBehavior(req, {
+                    eventType: "search",
+                    search,
+                    score: 1,
+                    metadata: {
+                        category,
+                        fieldName,
+                        fieldValue,
+                        resultCount: items.length,
+                        source: usedElasticsearch ? "es" : "mongo_fallback",
+                        latencyMs: usedElasticsearch ? esTookMs : undefined,
+                    },
+                });
+            }
+
+            return res.success(req.nextPageOptions(items, total, listExtras));
+
+        } catch (error) {
+            console.error(error)
+            res.error(error)
+        }
+    },
+    recommended: async (req, res) => {
+        try {
+            const { limit } = req.paginationOptions;
+            const { category, refresh } = req.query;
+            const items = await getRecommendedProducts(req, { limit, category, refresh });
+
+            await priceExchange(items, req.exchangeRate);
+            return res.success(req.nextPageOptions(items, items.length, {
+                hasMore: items.length >= limit,
+                personalized: Boolean(req.user?._id || req.deviceId),
+                aiRecommendations: true,
+            }));
+        } catch (error) {
+            console.error(error);
+            res.error(error);
+        }
+    },
+    productArchived: async (productId) => {
+        try {
+            const updatedProduct = await _model.Product.findByIdAndUpdate(
+                productId,
+                { status: "archived" },
+                { new: true, lean: true }
+            );
+            await productIndex.set(updatedProduct);
+
+        } catch (error) {
+            console.error("productArchived", error)
+
+        }
+
+    },
+    frequentlySearch: async (req, res) => {
+        try {
+            if (!global._model?.FrequentlySearch?.get) {
+                return res.success("RECORD_FOUND", []);
+            }
+            const _data = await _model.FrequentlySearch.get();
+
+            return res.success("RECORD_FOUND", _data);
+
+        } catch (error) {
+            console.error(error)
+            res.error(error)
+        }
+    },
+    /**
+     * AI Smart Listing — image URL → VL attributes → listing JSON (seller preview).
+     * POST body: { imageUrl, sourcePriceCNY? }
+     */
+    smartListing: async (req, res) => {
+        try {
+            const { imageUrl, sourcePriceCNY } = req.body || {};
+            if (!imageUrl || !String(imageUrl).trim()) {
+                return res.error("IMAGE_URL_REQUIRED");
+            }
+            const result = await runSmartListing({
+                imageUrl: String(imageUrl).trim(),
+                sourcePriceCNY,
+            });
+            return res.success("SMART_LISTING_GENERATED", result);
+        } catch (error) {
+            console.error("smartListing", error);
+            res.error(error?.message || error);
+        }
+    },
+
+    /** Step 1 only — vision attribute extraction. */
+    analyzeProductImage: async (req, res) => {
+        try {
+            const { imageUrl } = req.body || {};
+            if (!imageUrl || !String(imageUrl).trim()) {
+                return res.error("IMAGE_URL_REQUIRED");
+            }
+            const attributes = await analyzeImageAi(String(imageUrl).trim());
+            return res.success("IMAGE_ANALYZED", { attributes });
+        } catch (error) {
+            console.error("analyzeProductImage", error);
+            res.error(error?.message || error);
+        }
+    },
+
+    /** DashScope VL — image URL → catalog search keywords. */
+    analyzeImageSearchKeywords: async (req, res) => {
+        try {
+            const { imageUrl } = req.body || {};
+            if (!imageUrl || !String(imageUrl).trim()) {
+                return res.error("IMAGE_URL_REQUIRED");
+            }
+            const keywords = await extractImageSearchKeywords(String(imageUrl).trim());
+            if (!keywords) {
+                return res.error("AI_IMAGE_SEARCH_DISABLED");
+            }
+            return res.success("IMAGE_SEARCH_KEYWORDS", keywords);
+        } catch (error) {
+            console.error("analyzeImageSearchKeywords", error);
+            res.error(error?.message || error);
+        }
+    },
+
+    /** Upload image + AI vision search (single request from search bar). */
+    imageSearchUpload: async (req, res) => {
+        try {
+            const file = req.file;
+            if (!file?.location) {
+                return res.error("IMAGE_IS_REQUIRED");
+            }
+
+            const imageUrl = String(file.location).trim();
+            const { limit } = req.paginationOptions;
+
+            const aiImageResult = await resolveImageSearchFromAi({
+                imageAddress: imageUrl,
+                limit,
+                skip: 1,
+            });
+
+            let items = await resolveActiveCatalogItems(aiImageResult?.items || []);
+            items = items.slice(0, limit);
+            await priceExchange(items, req.exchangeRate);
+
+            const vision = aiImageResult?.vision || {};
+            if (vision.primaryKeyword) {
+                trackProductBehavior(req, {
+                    eventType: "search",
+                    search: vision.primaryKeyword,
+                    score: 1,
+                    metadata: {
+                        imageSearch: true,
+                        imageUrl,
+                        provider: vision.provider || "dashscope",
+                        resultCount: items.length,
+                    },
+                });
+            }
+
+            return res.success(req.nextPageOptions(items, items.length ? 500 : 0, {
+                imageSearch: true,
+                imageSearchProvider: vision.provider || "dashscope",
+                imageSearchKeyword: vision.primaryKeyword || "",
+                imageSearchKeywords: vision.keywords || [],
+                imageSearchPhrase: vision.searchPhrase || "",
+                imageUrl,
+            }));
+        } catch (error) {
+            console.error("imageSearchUpload", error);
+            res.error(error?.message || error);
+        }
+    },
+
+    /** Embedding-based similar products (AI recommendations). */
+    similarProducts: async (req, res) => {
+        try {
+            const productId = req.params.productId;
+            if (!isValidObjectId(productId)) {
+                return res.error("INVALID_PRODUCT_ID");
+            }
+            const limit = Math.min(Math.max(Number(req.query.limit) || 6, 1), 24);
+            const items = await getSimilarProducts(productId, { limit });
+            await priceExchange(items, req.exchangeRate);
+            return res.success("RECORD_FOUND", items);
+        } catch (error) {
+            console.error("similarProducts", error);
+            res.error(error);
+        }
+    },
+
+    categoryThumbnails: async (req, res) => {
+        try {
+            const rawIds = String(req.query.ids || "")
+                .split(",")
+                .map((id) => id.trim())
+                .filter(looksLikeObjectId);
+            const refresh = String(req.query.refresh || "").trim();
+
+            if (!rawIds.length) {
+                return res.success("RECORD_FOUND", {});
+            }
+
+            const uniqueIds = [...new Set(rawIds)].slice(0, 32);
+            const result = {};
+
+            await Promise.all(
+                uniqueIds.map(async (categoryId) => {
+                    try {
+                        const url = await fetchCategoryThumbnailUrl(categoryId, refresh);
+                        if (url) result[categoryId] = url;
+                    } catch (err) {
+                        console.warn(`categoryThumbnails failed for ${categoryId}:`, err.message);
+                    }
+                })
+            );
+
+            return res.success("RECORD_FOUND", result);
+        } catch (error) {
+            console.error(error);
+            res.error(error);
+        }
+    },
+};
+

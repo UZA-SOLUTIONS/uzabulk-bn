@@ -1,0 +1,1325 @@
+{
+	"GEOFENCE_TYPE": [
+		{
+			"label": "Promocode",
+			"value": "promocode"
+		},
+		{
+			"label": "Vendor",
+			"value": "vendor"
+		},
+		{
+			"label": "Taxi and Pick&Drop",
+			"value": "taxi"
+		}
+	],
+	"TERMINOLOGY_TYPE": [
+		{
+			"label": "Customers",
+			"value": "customers"
+		},
+		{
+			"label": "Drivers",
+			"value": "drivers"
+		},
+		{
+			"label": "Orders",
+			"value": "order"
+		},
+		{
+			"label": "Trips",
+			"value": "trip"
+		}
+	],
+	"menuType": [
+		"topMenu",
+		"footerLeft",
+		"footerMiddle"
+	],
+	"disputefor": [
+		{
+			"value": "vendor",
+			"label": "Vendor"
+		}
+	],
+	"disputeWith": [
+		"vendor"
+	],
+	"menuTypeObj": [
+		{
+			"type": "topMenu",
+			"label": "TOP MENU"
+		},
+		{
+			"type": "footerLeft",
+			"label": "QUICK LINKS"
+		},
+		{
+			"type": "footerMiddle",
+			"label": "CUSTOMER SERVICE"
+		}
+	],
+	"CANCELLATION_POLICY_ORDERSTATUS": [
+		{
+			"label": "Pending",
+			"orderStatus": "pending"
+		},
+		{
+			"label": "Confirmed",
+			"orderStatus": "confirmed"
+		}
+	],
+	"CANCELLATION_POLICY_REFUND_TYPE": [
+		{
+			"label": "Full",
+			"refundType": "full"
+		},
+		{
+			"label": "Partial",
+			"refundType": "partial"
+		},
+		{
+			"label": "No Refund",
+			"refundType": "no"
+		}
+	],
+	"APP_BANNER_SECTION_TYPE": [
+		{
+			"name": "Product Banner",
+			"type": "productBanner"
+		},
+		{
+			"name": "Category Banner",
+			"type": "categoryBanner"
+		},
+		{
+			"name": "Simple Banner",
+			"type": "simpleBanner"
+		}
+	],
+	"CONTENT_DEVICE_TYPE": [
+		"web",
+		"mobile"
+	],
+	"CONTENT_SECTION_TYPE": [
+		{
+			"name": "App Content",
+			"type": "appcontent",
+			"styles": [
+				{
+					"label": "App Content 1",
+					"value": "appcontent1",
+					"previewUrl": "https://uzalives3.s3.us-east-2.amazonaws.com/1635398790228app%20content.png"
+				}
+			]
+		},
+		{
+			"name": "Banner",
+			"type": "banner",
+			"styles": [
+				{
+					"label": "Banner 1",
+					"value": "banner1",
+					"previewUrl": "https://uzalives3.s3.us-east-2.amazonaws.com/1635399396837Banner.png"
+				}
+			]
+		},
+		{
+			"name": "Bestseller Products",
+			"type": "bestseller",
+			"styles": [
+				{
+					"label": "Bestseller 1",
+					"value": "bestseller1",
+					"previewUrl": "https://uzalives3.s3.us-east-2.amazonaws.com/1635399396837Banner.png"
+				}
+			]
+		},
+		{
+			"name": "Content + Image",
+			"type": "contentImage",
+			"styles": [
+				{
+					"label": "Content Image 1",
+					"value": "contentImage1",
+					"previewUrl": "https://uzalives3.s3.us-east-2.amazonaws.com/1635399830042content%20plus%20image.png"
+				}
+			]
+		},
+		{
+			"name": "Content Only",
+			"type": "content",
+			"styles": [
+				{
+					"label": "Content 1",
+					"value": "content1",
+					"previewUrl": "https://uzalives3.s3.us-east-2.amazonaws.com/1635399970957Content%20only.png"
+				}
+			]
+		},
+		{
+			"name": "Feature",
+			"type": "feature",
+			"styles": [
+				{
+					"label": "Feature 1",
+					"value": "feature1",
+					"previewUrl": "https://uzalives3.s3.us-east-2.amazonaws.com/1635400138042service%20and%20feature.png"
+				}
+			]
+		},
+		{
+			"name": "Promotions",
+			"type": "promotion",
+			"styles": [
+				{
+					"label": "Promotion 1",
+					"value": "promotion1",
+					"previewUrl": "https://uzalives3.s3.us-east-2.amazonaws.com/1635400240694promotion.png"
+				}
+			]
+		},
+		{
+			"name": "Store Categories",
+			"type": "storecategories",
+			"styles": [
+				{
+					"label": "Store Categories 1",
+					"value": "storecategories1",
+					"previewUrl": "https://uzalives3.s3.us-east-2.amazonaws.com/1635400475127screenshot-main.uza-staging.com-2021.10.28-11_23_53.png"
+				}
+			]
+		},
+		{
+			"name": "Testimonials",
+			"type": "testimonial",
+			"styles": [
+				{
+					"label": "Testimonial 1",
+					"value": "testimonial1",
+					"previewUrl": "https://uzalives3.s3.us-east-2.amazonaws.com/1635400564577testimonials.png"
+				}
+			]
+		},
+		{
+			"name": "Slider",
+			"type": "slider",
+			"styles": [
+				{
+					"label": "Slider 1",
+					"value": "slider1",
+					"previewUrl": "https://uzalives3.s3.us-east-2.amazonaws.com/1635400688377slider.png"
+				},
+				{
+					"label": "Carousel",
+					"value": "carousel",
+					"previewUrl": "https://uzalives3.s3.us-east-2.amazonaws.com/1635400804874our%20partner.png"
+				}
+			]
+		},
+		{
+			"name": "Gallery",
+			"type": "gallery",
+			"styles": [
+				{
+					"label": "Gallery 1",
+					"value": "gallery1",
+					"previewUrl": "https://uzalives3.s3.us-east-2.amazonaws.com/1635417948372gallery.png"
+				}
+			]
+		}
+	],
+	"COUNTRIES": [
+		{
+			"name": "Austria",
+			"code": "AT",
+			"cc": "+43"
+		},
+		{
+			"name": "Australia",
+			"code": "AU",
+			"cc": "+61"
+		},
+		{
+			"name": "Belgium",
+			"code": "BE",
+			"cc": "+32"
+		},
+		{
+			"name": "Botswana",
+			"code": "BW",
+			"cc": "+267"
+		},
+		{
+			"name": "Brazil",
+			"code": "BR",
+			"cc": "+55"
+		},
+		{
+			"name": "Bulgaria",
+			"code": "BG",
+			"cc": "+359"
+		},
+		{
+			"name": "Cameroon",
+			"code": "CM",
+			"cc": "+237"
+		},
+		{
+			"name": "Canada",
+			"code": "CA",
+			"cc": "+1"
+		},
+		{
+			"name": "Côte d'Ivoire",
+			"code": "CI",
+			"cc": "+225"
+		},
+		{
+			"name": "Cyprus",
+			"code": "CY",
+			"cc": "+357"
+		},
+		{
+			"name": "Czech Republic",
+			"code": "CY",
+			"cc": "+420"
+		},
+		{
+			"name": "Denmark",
+			"code": "DK",
+			"cc": "+45"
+		},
+		{
+			"name": "Estonia",
+			"code": "EE",
+			"cc": "+372"
+		},
+		{
+			"name": "Egypt",
+			"code": "EG",
+			"cc": "+20"
+		},
+		{
+			"name": "Finland",
+			"code": "FI",
+			"cc": "+358"
+		},
+		{
+			"name": "France",
+			"code": "FR",
+			"cc": "+33"
+		},
+		{
+			"name": "Ghana",
+			"code": "GH",
+			"cc": "+233"
+		},
+		{
+			"name": "Germany",
+			"code": "DE",
+			"cc": "+49"
+		},
+		{
+			"name": "Greece",
+			"code": "GR",
+			"cc": "+30"
+		},
+		{
+			"name": "Guinea",
+			"code": "GN",
+			"cc": "+224"
+		},
+		{
+			"name": "Haiti",
+			"code": "HT",
+			"cc": "+509"
+		},
+		{
+			"name": "Hong Kong",
+			"code": "HK",
+			"cc": "+852"
+		},
+		{
+			"name": "Hungary",
+			"code": "HU",
+			"cc": "+36"
+		},
+		{
+			"name": "India",
+			"code": "IN",
+			"cc": "+91"
+		},
+		{
+			"name": "Ireland",
+			"code": "IE",
+			"cc": "+353"
+		},
+		{
+			"name": "Italy",
+			"code": "IT",
+			"cc": "+61"
+		},
+		{
+			"name": "Japan",
+			"code": "JP",
+			"cc": "+81"
+		},
+		{
+			"name": "Latvia",
+			"code": "LV",
+			"cc": "+371"
+		},
+		{
+			"name": "Libya",
+			"code": "LY",
+			"cc": "+218"
+		},
+		{
+			"name": "Lithuania",
+			"code": "LT",
+			"cc": "+370"
+		},
+		{
+			"name": "Luxembourg",
+			"code": "LU",
+			"cc": "+352"
+		},
+		{
+			"name": "Madagascar",
+			"code": "MG",
+			"cc": "+261"
+		},
+		{
+			"name": "Malaysia",
+			"code": "MY",
+			"cc": "+60"
+		},
+		{
+			"name": "Malta",
+			"code": "MT",
+			"cc": "+356"
+		},
+		{
+			"name": "Mali",
+			"code": "ML",
+			"cc": "+223"
+		},
+		{
+			"name": "Mexico",
+			"code": "MX",
+			"cc": "+52"
+		},
+		{
+			"name": "Netherlands",
+			"code": "NL",
+			"cc": "+31"
+		},
+		{
+			"name": "New Zealand",
+			"code": "NZ",
+			"cc": "+64"
+		},
+		{
+			"name": "Nigeria",
+			"code": "NG",
+			"cc": "+234"
+		},
+		{
+			"name": "Norway",
+			"code": "NO",
+			"cc": "+47"
+		},
+		{
+			"name": "Oman",
+			"code": "OM",
+			"cc": "+968"
+		},
+		{
+			"name": "Pakistan",
+			"code": "PK",
+			"cc": "+92"
+		},
+		{
+			"name": "Poland",
+			"code": "PL",
+			"cc": "+48"
+		},
+		{
+			"name": "Portugal",
+			"code": "PT",
+			"cc": "+351"
+		},
+		{
+			"name": "Romania",
+			"code": "RO",
+			"cc": "+40"
+		},
+		{
+			"name": "Senegal",
+			"code": "SN",
+			"cc": "+221"
+		},
+		{
+			"name": "Singapore",
+			"code": "SG",
+			"cc": "+65"
+		},
+		{
+			"name": "Sierra Leone",
+			"code": "SL",
+			"cc": "+232"
+		},
+		{
+			"name": "Slovenia",
+			"code": "SI",
+			"cc": "+386"
+		},
+		{
+			"name": "South Africa",
+			"code": "ZA",
+			"cc": "+27"
+		},
+		{
+			"name": "Spain",
+			"code": "ES",
+			"cc": "+61"
+		},
+		{
+			"name": "Sweden",
+			"code": "SE",
+			"cc": "+46"
+		},
+		{
+			"name": "Switzerland",
+			"code": "CH",
+			"cc": "+41"
+		},
+		{
+			"name": "Sudan",
+			"code": "SD",
+			"cc": "+249"
+		},
+		{
+			"name": "Tanzania",
+			"code": "TZA",
+			"cc": "+255"
+		},
+		{
+			"name": "United Arab Emirates",
+			"code": "AE",
+			"cc": "+971"
+		},
+		{
+			"name": "United Kingdom",
+			"code": "GB",
+			"cc": "+44"
+		},
+		{
+			"name": "United States",
+			"code": "US",
+			"cc": "+1"
+		},
+		{
+			"name": "Zambia",
+			"code": "ZM",
+			"cc": "+260"
+		}
+	],
+	"LANGUAGES": [
+		{
+			"name": "English",
+			"code": "en",
+			"flag": "https://uzastagings3.s3.us-east-2.amazonaws.com/1662988600236us.jpg"
+		},
+		{
+			"name": "French",
+			"code": "fr",
+			"flag": "https://uzastagings3.s3.us-east-2.amazonaws.com/1662988839381french.jpg"
+		},
+		{
+			"name": "Haitian Creole",
+			"code": "ht",
+			"flag": "https://uzastagings3.s3.us-east-2.amazonaws.com/1662988815164haitian-creole.png"
+		},
+		{
+			"name": "Chinese",
+			"code": "zh",
+			"flag": "https://uzastagings3.s3.us-east-2.amazonaws.com/1662988745259Flag-China.jpg"
+		},
+		{
+			"name": "Russian",
+			"code": "ru",
+			"flag": "https://uzastagings3.s3.us-east-2.amazonaws.com/1678190972383Russion-ru.png"
+		}
+	],
+	"CURRENCIES": [
+		{
+			"name": "$",
+			"code": "USD"
+		},
+		{
+			"name": "د.إ",
+			"code": "AED"
+		},
+		{
+			"name": "$",
+			"code": "AUD"
+		},
+		{
+			"name": "$",
+			"code": "CAD"
+		},
+		{
+			"name": "€",
+			"code": "EUR"
+		},
+		{
+			"name": "£",
+			"code": "GBP"
+		},
+		{
+			"name": "¥",
+			"code": "JPY"
+		},
+		{
+			"name": "Kr",
+			"code": "NOK"
+		},
+		{
+			"name": "Kr",
+			"code": "SEK"
+		},
+		{
+			"name": "Fr",
+			"code": "CHF"
+		},
+		{
+			"name": "₩",
+			"code": "KRW"
+		},
+		{
+			"name": "$",
+			"code": "HKD"
+		},
+		{
+			"name": "Mex$",
+			"code": "MXN"
+		},
+		{
+			"name": "$",
+			"code": "NZD"
+		},
+		{
+			"name": "₦",
+			"code": "NGN"
+		},
+		{
+			"name": "ر.ع.",
+			"code": "OMR"
+		},
+		{
+			"name": "Le",
+			"code": "SLL"
+		},
+		{
+			"name": "₹",
+			"code": "INR"
+		},
+		{
+			"name": "₨",
+			"code": "PKR"
+		},
+		{
+			"name": "R",
+			"code": "ZAR"
+		},
+		{
+			"name": "GH₵",
+			"code": "GHS"
+		},
+		{
+			"name": "CFA",
+			"code": "XOF"
+		},
+		{
+			"name": "G",
+			"code": "HTG"
+		},
+		{
+			"name": "ZK",
+			"code": "ZMW"
+		},
+		{
+			"name": "TSh",
+			"code": "TZS"
+		},
+		{
+			"name": "R$",
+			"code": "BRL"
+		},
+		{
+			"name": "ج.س",
+			"code": "SDG"
+		}
+	],
+	"NOTIFICATIONS_SOUND": [
+		{
+			"label": "Beep",
+			"filename": "beep.mp3"
+		},
+		{
+			"label": "Serene",
+			"filename": "serene.mp3"
+		}
+	],
+	"TIMEZONES": [
+		{
+			"name": "(GMT-11:00) American Samoa",
+			"code": "Pacific/Pago_Pago"
+		},
+		{
+			"name": "(GMT-11:00) Midway Island",
+			"code": "Pacific/Midway"
+		},
+		{
+			"name": "(GMT-10:00) Hawaii",
+			"code": "Pacific/Honolulu"
+		},
+		{
+			"name": "(GMT-09:00) Alaska",
+			"code": "America/Juneau"
+		},
+		{
+			"name": "(GMT-08:00) Pacific Time (US & Canada)",
+			"code": "America/Los_Angeles"
+		},
+		{
+			"name": "(GMT-08:00) Tijuana",
+			"code": "America/Tijuana"
+		},
+		{
+			"name": "(GMT-07:00) Arizona",
+			"code": "America/Phoenix"
+		},
+		{
+			"name": "(GMT-07:00) Chihuahua",
+			"code": "America/Chihuahua"
+		},
+		{
+			"name": "(GMT-07:00) Mazatlan",
+			"code": "America/Mazatlan"
+		},
+		{
+			"name": "(GMT-07:00) Mountain Time (US & Canada)",
+			"code": "America/Denver"
+		},
+		{
+			"name": "(GMT-06:00) Central America",
+			"code": "America/Guatemala"
+		},
+		{
+			"name": "(GMT-06:00) Central Time (US & Canada)",
+			"code": "America/Chicago"
+		},
+		{
+			"name": "(GMT-06:00) Guadalajara, Mexico City",
+			"code": "America/Mexico_City"
+		},
+		{
+			"name": "(GMT-05:00) Tulum, Mexico",
+			"code": "America/Cancun"
+		},
+		{
+			"name": "(GMT-06:00) Monterrey",
+			"code": "America/Monterrey"
+		},
+		{
+			"name": "(GMT-06:00) Saskatchewan",
+			"code": "America/Regina"
+		},
+		{
+			"name": "(GMT-05:00) Bogota",
+			"code": "America/Bogota"
+		},
+		{
+			"name": "(GMT-05:00) Eastern Time (US & Canada)",
+			"code": "America/New_York"
+		},
+		{
+			"name": "(GMT-05:00) Indiana (East)",
+			"code": "America/Indiana/Indianapolis"
+		},
+		{
+			"name": "(GMT-05:00) Lima, Quito",
+			"code": "America/Lima"
+		},
+		{
+			"name": "(GMT-04:00) Atlantic Time (Canada)",
+			"code": "America/Halifax"
+		},
+		{
+			"name": "(GMT-04:00) Caracas",
+			"code": "America/Caracas"
+		},
+		{
+			"name": "(GMT-04:00) Georgetown",
+			"code": "America/Guyana"
+		},
+		{
+			"name": "(GMT-04:00) La Paz",
+			"code": "America/La_Paz"
+		},
+		{
+			"name": "(GMT-04:00) Puerto Rico",
+			"code": "America/Puerto_Rico"
+		},
+		{
+			"name": "(GMT-04:00) Santiago",
+			"code": "America/Santiago"
+		},
+		{
+			"name": "(GMT-03:30) Newfoundland",
+			"code": "America/St_Johns"
+		},
+		{
+			"name": "(GMT-03:00) Brasilia",
+			"code": "America/Sao_Paulo"
+		},
+		{
+			"name": "(GMT-03:00) Buenos Aires",
+			"code": "America/Argentina/Buenos_Aires"
+		},
+		{
+			"name": "(GMT-03:00) Greenland",
+			"code": "America/Godthab"
+		},
+		{
+			"name": "(GMT-03:00) Montevideo",
+			"code": "America/Montevideo"
+		},
+		{
+			"name": "(GMT-02:00) Mid-Atlantic",
+			"code": "Atlantic/South_Georgia"
+		},
+		{
+			"name": "(GMT-01:00) Azores",
+			"code": "Atlantic/Azores"
+		},
+		{
+			"name": "(GMT-01:00) Cape Verde Is.",
+			"code": "Atlantic/Cape_Verde"
+		},
+		{
+			"name": "(GMT+00:00) Edinburgh, London",
+			"code": "Europe/London"
+		},
+		{
+			"name": "(GMT+00:00) Lisbon",
+			"code": "Europe/Lisbon"
+		},
+		{
+			"name": "(GMT+00:00) Monrovia",
+			"code": "Africa/Monrovia"
+		},
+		{
+			"name": "(GMT+00:00) UTC",
+			"code": "Etc/UTC"
+		},
+		{
+			"name": "(GMT+01:00) Amsterdam",
+			"code": "Europe/Amsterdam"
+		},
+		{
+			"name": "(GMT+01:00) Belgrade",
+			"code": "Europe/Belgrade"
+		},
+		{
+			"name": "(GMT+01:00) Berlin",
+			"code": "Europe/Berlin"
+		},
+		{
+			"name": "(GMT+01:00) Bern, Zurich",
+			"code": "Europe/Zurich"
+		},
+		{
+			"name": "(GMT+01:00) Bratislava",
+			"code": "Europe/Bratislava"
+		},
+		{
+			"name": "(GMT+01:00) Brussels",
+			"code": "Europe/Brussels"
+		},
+		{
+			"name": "(GMT+01:00) Budapest",
+			"code": "Europe/Budapest"
+		},
+		{
+			"name": "(GMT+01:00) Casablanca",
+			"code": "Africa/Casablanca"
+		},
+		{
+			"name": "(GMT+01:00) Copenhagen",
+			"code": "Europe/Copenhagen"
+		},
+		{
+			"name": "(GMT+00:00) Dublin",
+			"code": "Europe/Dublin"
+		},
+		{
+			"name": "(GMT+01:00) Ljubljana",
+			"code": "Europe/Ljubljana"
+		},
+		{
+			"name": "(GMT+01:00) Madrid",
+			"code": "Europe/Madrid"
+		},
+		{
+			"name": "(GMT+01:00) Paris",
+			"code": "Europe/Paris"
+		},
+		{
+			"name": "(GMT+01:00) Prague",
+			"code": "Europe/Prague"
+		},
+		{
+			"name": "(GMT+01:00) Rome",
+			"code": "Europe/Rome"
+		},
+		{
+			"name": "(GMT+01:00) Sarajevo",
+			"code": "Europe/Sarajevo"
+		},
+		{
+			"name": "(GMT+01:00) Skopje",
+			"code": "Europe/Skopje"
+		},
+		{
+			"name": "(GMT+01:00) Stockholm",
+			"code": "Europe/Stockholm"
+		},
+		{
+			"name": "(GMT+01:00) Vienna",
+			"code": "Europe/Vienna"
+		},
+		{
+			"name": "(GMT+01:00) Warsaw",
+			"code": "Europe/Warsaw"
+		},
+		{
+			"name": "(GMT+01:00) West Central Africa",
+			"code": "Africa/Algiers"
+		},
+		{
+			"name": "(GMT+01:00) Zagreb",
+			"code": "Europe/Zagreb"
+		},
+		{
+			"name": "(GMT+02:00) Athens",
+			"code": "Europe/Athens"
+		},
+		{
+			"name": "(GMT+02:00) Bucharest",
+			"code": "Europe/Bucharest"
+		},
+		{
+			"name": "(GMT+02:00) Central Africa Time",
+			"code": "Africa"
+		},
+		{
+			"name": "(GMT+02:00) Freetown",
+			"code": "Africa/Freetown"
+		},
+		{
+			"name": "(GMT+02:00) Central Africa Time",
+			"code": "Africa"
+		},
+		{
+			"name": "(GMT+02:00) Johannesburg",
+			"code": "Africa/Johannesburg"
+		},
+		{
+			"name": "(GMT+02:00) Cairo",
+			"code": "Africa/Cairo"
+		},
+		{
+			"name": "(GMT+02:00) Harare",
+			"code": "Africa/Harare"
+		},
+		{
+			"name": "(GMT+02:00) Helsinki",
+			"code": "Europe/Helsinki"
+		},
+		{
+			"name": "(GMT+02:00) Jerusalem",
+			"code": "Asia/Jerusalem"
+		},
+		{
+			"name": "(GMT+02:00) Kaliningrad",
+			"code": "Europe/Kaliningrad"
+		},
+		{
+			"name": "(GMT+02:00) Kyiv",
+			"code": "Europe/Kiev"
+		},
+		{
+			"name": "(GMT+02:00) Pretoria",
+			"code": "Africa/Johannesburg"
+		},
+		{
+			"name": "(GMT+02:00) Riga",
+			"code": "Europe/Riga"
+		},
+		{
+			"name": "(GMT+02:00) Sofia",
+			"code": "Europe/Sofia"
+		},
+		{
+			"name": "(GMT+02:00) Tallinn",
+			"code": "Europe/Tallinn"
+		},
+		{
+			"name": "(GMT+02:00) Vilnius",
+			"code": "Europe/Vilnius"
+		},
+		{
+			"name": "(GMT+03:00) Baghdad",
+			"code": "Asia/Baghdad"
+		},
+		{
+			"name": "(GMT+03:00) Istanbul",
+			"code": "Europe/Istanbul"
+		},
+		{
+			"name": "(GMT+03:00) Kuwait",
+			"code": "Asia/Kuwait"
+		},
+		{
+			"name": "(GMT+03:00) Minsk",
+			"code": "Europe/Minsk"
+		},
+		{
+			"name": "(GMT+03:00) Moscow, St. Petersburg",
+			"code": "Europe/Moscow"
+		},
+		{
+			"name": "(GMT+03:00) Nairobi",
+			"code": "Africa/Nairobi"
+		},
+		{
+			"name": "(GMT+03:00) Riyadh",
+			"code": "Asia/Riyadh"
+		},
+		{
+			"name": "(GMT+03:30) Tehran",
+			"code": "Asia/Tehran"
+		},
+		{
+			"name": "(GMT+04:00) Abu Dhabi, Muscat",
+			"code": "Asia/Muscat"
+		},
+		{
+			"name": "(GMT+04:00) Baku",
+			"code": "Asia/Baku"
+		},
+		{
+			"name": "(GMT+04:00) Samara",
+			"code": "Europe/Samara"
+		},
+		{
+			"name": "(GMT+04:00) Tbilisi",
+			"code": "Asia/Tbilisi"
+		},
+		{
+			"name": "(GMT+03:00) Volgograd",
+			"code": "Europe/Volgograd"
+		},
+		{
+			"name": "(GMT+04:00) Yerevan",
+			"code": "Asia/Yerevan"
+		},
+		{
+			"name": "(GMT+04:30) Kabul",
+			"code": "Asia/Kabul"
+		},
+		{
+			"name": "(GMT+05:00) Ekaterinburg",
+			"code": "Asia/Yekaterinburg"
+		},
+		{
+			"name": "(GMT+05:00) Islamabad, Karachi",
+			"code": "Asia/Karachi"
+		},
+		{
+			"name": "(GMT+05:00) Tashkent",
+			"code": "Asia/Tashkent"
+		},
+		{
+			"name": "(GMT+05:30) Chennai, Kolkata, Mumbai, New Delhi",
+			"code": "Asia/Kolkata"
+		},
+		{
+			"name": "(GMT+05:30) Sri Jayawardenepura",
+			"code": "Asia/Colombo"
+		},
+		{
+			"name": "(GMT+05:45) Kathmandu",
+			"code": "Asia/Kathmandu"
+		},
+		{
+			"name": "(GMT+06:00) Almaty",
+			"code": "Asia/Almaty"
+		},
+		{
+			"name": "(GMT+06:00) Astana, Dhaka",
+			"code": "Asia/Dhaka"
+		},
+		{
+			"name": "(GMT+06:00) Urumqi",
+			"code": "Asia/Urumqi"
+		},
+		{
+			"name": "(GMT+06:30) Rangoon",
+			"code": "Asia/Rangoon"
+		},
+		{
+			"name": "(GMT+07:00) Bangkok, Hanoi",
+			"code": "Asia/Bangkok"
+		},
+		{
+			"name": "(GMT+07:00) Jakarta",
+			"code": "Asia/Jakarta"
+		},
+		{
+			"name": "(GMT+07:00) Krasnoyarsk",
+			"code": "Asia/Krasnoyarsk"
+		},
+		{
+			"name": "(GMT+07:00) Novosibirsk",
+			"code": "Asia/Novosibirsk"
+		},
+		{
+			"name": "(GMT+08:00) Beijing",
+			"code": "Asia/Shanghai"
+		},
+		{
+			"name": "(GMT+08:00) Chongqing",
+			"code": "Asia/Chongqing"
+		},
+		{
+			"name": "(GMT+08:00) Hong Kong",
+			"code": "Asia/Hong_Kong"
+		},
+		{
+			"name": "(GMT+08:00) Irkutsk",
+			"code": "Asia/Irkutsk"
+		},
+		{
+			"name": "(GMT+08:00) Kuala Lumpur",
+			"code": "Asia/Kuala_Lumpur"
+		},
+		{
+			"name": "(GMT+08:00) Perth",
+			"code": "Australia/Perth"
+		},
+		{
+			"name": "(GMT+08:00) Singapore",
+			"code": "Asia/Singapore"
+		},
+		{
+			"name": "(GMT+08:00) Taipei",
+			"code": "Asia/Taipei"
+		},
+		{
+			"name": "(GMT+08:00) Ulaanbaatar",
+			"code": "Asia/Ulaanbaatar"
+		},
+		{
+			"name": "(GMT+09:00) Osaka, Sapporo, Tokyo",
+			"code": "Asia/Tokyo"
+		},
+		{
+			"name": "(GMT+09:00) Seoul",
+			"code": "Asia/Seoul"
+		},
+		{
+			"name": "(GMT+09:00) Yakutsk",
+			"code": "Asia/Yakutsk"
+		},
+		{
+			"name": "(GMT+09:30) Adelaide",
+			"code": "Australia/Adelaide"
+		},
+		{
+			"name": "(GMT+09:30) Darwin",
+			"code": "Australia/Darwin"
+		},
+		{
+			"name": "(GMT+10:00) Brisbane",
+			"code": "Australia/Brisbane"
+		},
+		{
+			"name": "(GMT+10:00) Canberra, Melbourne",
+			"code": "Australia/Melbourne"
+		},
+		{
+			"name": "(GMT+10:00) Guam",
+			"code": "Pacific/Guam"
+		},
+		{
+			"name": "(GMT+10:00) Hobart",
+			"code": "Australia/Hobart"
+		},
+		{
+			"name": "(GMT+10:00) Port Moresby",
+			"code": "Pacific/Port_Moresby"
+		},
+		{
+			"name": "(GMT+10:00) Sydney",
+			"code": "Australia/Sydney"
+		},
+		{
+			"name": "(GMT+10:00) Vladivostok",
+			"code": "Asia/Vladivostok"
+		},
+		{
+			"name": "(GMT+11:00) Magadan",
+			"code": "Asia/Magadan"
+		},
+		{
+			"name": "(GMT+11:00) New Caledonia",
+			"code": "Pacific/Noumea"
+		},
+		{
+			"name": "(GMT+11:00) Solomon Is.",
+			"code": "Pacific/Guadalcanal"
+		},
+		{
+			"name": "(GMT+11:00) Srednekolymsk",
+			"code": "Asia/Srednekolymsk"
+		},
+		{
+			"name": "(GMT+12:00) Auckland, Wellington",
+			"code": "Pacific/Auckland"
+		},
+		{
+			"name": "(GMT+12:00) Fiji",
+			"code": "Pacific/Fiji"
+		},
+		{
+			"name": "(GMT+12:00) Kamchatka",
+			"code": "Asia/Kamchatka"
+		},
+		{
+			"name": "(GMT+12:00) Marshall Is.",
+			"code": "Pacific/Majuro"
+		},
+		{
+			"name": "(GMT+12:45) Chatham Is.",
+			"code": "Pacific/Chatham"
+		},
+		{
+			"name": "(GMT+13:00) Nuku'alofa",
+			"code": "Pacific/Tongatapu"
+		},
+		{
+			"name": "(GMT+13:00) Samoa",
+			"code": "Pacific/Apia"
+		},
+		{
+			"name": "(GMT+13:00) Tokelau Is.",
+			"code": "Pacific/Fakaofo"
+		}
+	],
+	"SERVICES": [
+		"ECOMMERCE"
+	],
+	"pricingType_enum": [
+		"unit",
+		"kg",
+		"litre",
+		"gm"
+	],
+	"serviceUnit_enum": [
+		"min",
+		"hour"
+	],
+	"serviceUnit": [
+		{
+			"label": "min",
+			"value": "min"
+		},
+		{
+			"label": "hour",
+			"value": "hour"
+		}
+	],
+	"pricingType": [
+		{
+			"label": "Unit",
+			"value": "unit"
+		},
+		{
+			"label": "Kg",
+			"value": "kg"
+		},
+		{
+			"label": "Hour",
+			"value": "hour"
+		},
+		{
+			"label": "Day",
+			"value": "day"
+		}
+	],
+	"STORETYPES": [
+		{
+			"storeType": "ECOMMERCE",
+			"icon": "/images/ecommerce.png",
+			"label": "Ecommerce"
+		}
+	],
+	"ROLES": [
+		"USER",
+		"ADMIN",
+		"SUPPERADMIN",
+		"VENDOR",
+		"STAFF",
+		"WHOLESALER"
+	],
+	"DELIVERY": [
+		"TAKEAWAY",
+		"DELIVERY"
+	],
+	"PAYMENTGATEWAY": [
+		"stripe",
+		"applepay",
+		"googlepay",
+		"wallet",
+		"cod",
+		"cardOnDelivery"
+	],
+	"DIRECTPAYMENTGATEWAY": [
+	],
+	"SORT_TYPE": [
+		{
+			"key": "time",
+			"label": "Time"
+		},
+		{
+			"key": "rating",
+			"label": "Rating"
+		},
+		{
+			"key": "lprice",
+			"label": "Low to High Cost"
+		},
+		{
+			"key": "hprice",
+			"label": "High to Low Cost"
+		}
+	],
+	"FILE_TYPE": [
+		"storeGallery"
+	]
+}
