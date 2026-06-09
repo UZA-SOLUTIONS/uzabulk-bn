@@ -1,35 +1,32 @@
-# --- Local frontend (not part of this backend repo) ---
-/src/
-/public/
-/build/
-/package.json
-/package-lock.json
-/bitbucket-pipelines.yml
-/README.md
-/.env.example
-/node_modules/
+# Local frontend (not part of this backend repo)
+/uzabulk-frontend/
 
-# --- Backend repo (uzabulk-backend/) ---
-uzabulk-backend/node_modules/
-uzabulk-backend/dist/
-uzabulk-backend/logs/
-uzabulk-backend/tmp/
+# Node
+node_modules/
+dist/
+
+# Logs & temp
+logs/
+tmp/
+*.log
+
+# IDE
+.idea/
 
 # Secrets & environment (never commit)
-**/.env
-**/.env.*
-!**/.env.example
-**/*.pem
-**/*.p12
-**/*.pfx
-**/*id_rsa*
-**/*id_ed25519*
-**/credentials.json
-**/google.json
-**/*-firebase-adminsdk-*.json
-**/gcloud-application-credentials.json
-**/.npmrc
+.env
+.env.*
+!.env.example
+google.json
+*-firebase-adminsdk-*.json
+gcloud-application-credentials.json
+*.pem
+*.p12
+*.pfx
+*id_rsa*
+*id_ed25519*
+*.key
+.npmrc
 
 .DS_Store
 Thumbs.db
-*.log
