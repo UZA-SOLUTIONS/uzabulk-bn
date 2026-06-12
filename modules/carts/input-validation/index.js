@@ -46,6 +46,7 @@ let generateLineItems = async (product, items) => {
             obj.price = getVariation.price;
             obj.variation_id = getVariation._id;
             obj.sku_id = getVariation.skuId;
+            obj.spec_id = getVariation.specId || getVariation.skuId;
             obj.attributes = attrArray;
 
         }

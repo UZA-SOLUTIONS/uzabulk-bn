@@ -33,16 +33,17 @@ const noElasticClient = {
 };
 
 // Elasticsearch client setup
+const elasticEnv = getEnv()?.ELASTIC_SEARCH || {};
 const esClient = isElasticConfigured ? new Client({
     node: baseUrl,
-    ...(env.ELASTIC_SEARCH.IS_SECURITY_ENABLED ? {
+    ...(elasticEnv.IS_SECURITY_ENABLED ? {
         auth: {
-            username: env.ELASTIC_SEARCH.USERNAME,
-            password: env.ELASTIC_SEARCH.PASSWORD
-        }
+            username: elasticEnv.USERNAME,
+            password: elasticEnv.PASSWORD,
+        },
     } : {}),
-    requestTimeout: Number(process.env.ELASTIC_SEARCH_REQUEST_TIMEOUT_MS) || 10000,
-    maxRetries: Number(process.env.ELASTIC_SEARCH_MAX_RETRIES) || 2,
+    requestTimeout: Number(process.env.ELASTIC_SEARCH_REQUEST_TIMEOUT_MS) || 2500,
+    maxRetries: Number(process.env.ELASTIC_SEARCH_MAX_RETRIES) || 0,
 }) : noElasticClient;
 
 if (getEnv()?.ELASTIC_SEARCH?.BASE_URL && !isElasticConfigured) {

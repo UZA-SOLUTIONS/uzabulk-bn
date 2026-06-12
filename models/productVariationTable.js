@@ -5,6 +5,7 @@ let productVariationSchema = new mongoose.Schema({
     image: { type: String },
     sku: { type: String, default: null },
     skuId: String,
+    specId: String,
     price: { type: Number, default: 0 },
     compare_price: { type: Number, default: 0 },
     manage_stock: { type: Boolean, default: false },
@@ -27,6 +28,7 @@ let productVariationSchema = new mongoose.Schema({
     });
 
 productVariationSchema.index({ skuId: 1 }, { name: "migration", background: false });
+productVariationSchema.index({ specId: 1 }, { name: "specId_lookup", background: true });
 
 const productVariationTable = module.exports = mongoose.model('productVariation', productVariationSchema);
 

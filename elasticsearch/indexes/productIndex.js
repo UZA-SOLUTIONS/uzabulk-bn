@@ -1,5 +1,10 @@
 const esClient = require("../esConfig");
 const esHelper = require("../esHelper");
+const {
+    isElasticConfigured,
+    isElasticsearchReachable,
+    logElasticsearchSearchError,
+} = require("../availability");
 const _ = require('lodash');
 
 const INDEX_ALIAS = "products";
@@ -147,6 +152,10 @@ module.exports = {
     },
 
     search: async (query = null, options = { limit: 10, skip: 0 }) => {
+        if (!isElasticConfigured() || !isElasticsearchReachable()) {
+            throw new Error("Search failed");
+        }
+
         try {
             const from = Number.parseInt(options?.skip, 10);
             const size = Number.parseInt(options?.limit, 10);
@@ -172,11 +181,8 @@ module.exports = {
                 timedOut: Boolean(data?.timed_out),
             };
         } catch (error) {
-            if (!String(env?.ELASTIC_SEARCH?.BASE_URL || "").trim()) {
-                throw new Error('Search failed');
-            }
-            console.error('Elasticsearch search error:', error); // Log the error for debugging
-            throw new Error('Search failed'); // Rethrow a user-friendly error
+            logElasticsearchSearchError(error);
+            throw new Error("Search failed");
         }
     },
 

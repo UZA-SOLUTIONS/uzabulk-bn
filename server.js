@@ -37,12 +37,39 @@ const startServer = async () => {
   server = app.listen(env.PORT, () => {
     logger.info({ apiModule: "server", apiHandler: "server.js" }, `Listening to port ${env.PORT}`);
     try {
+      const { startOAuthRefreshJob } = require("./jobs/oauthRefreshJob");
+      startOAuthRefreshJob();
+    } catch (oauthJobErr) {
+      logger.warn(
+        { apiModule: "server", apiHandler: "server.js" },
+        `1688 OAuth refresh job not started: ${oauthJobErr.message}`
+      );
+    }
+    try {
       const { startSupplierVerificationJob } = require("./jobs/supplierVerificationJob");
       startSupplierVerificationJob();
     } catch (jobErr) {
       logger.warn(
         { apiModule: "server", apiHandler: "server.js" },
         `Supplier verification job not started: ${jobErr.message}`
+      );
+    }
+    try {
+      const { startLogisticsPollingJob } = require("./jobs/logisticsPollingJob");
+      startLogisticsPollingJob();
+    } catch (jobErr) {
+      logger.warn(
+        { apiModule: "server", apiHandler: "server.js" },
+        `1688 logistics job not started: ${jobErr.message}`
+      );
+    }
+    try {
+      const { startCatalogSyncJob } = require("./jobs/catalogSyncJob");
+      startCatalogSyncJob();
+    } catch (jobErr) {
+      logger.warn(
+        { apiModule: "server", apiHandler: "server.js" },
+        `1688 catalog sync job not started: ${jobErr.message}`
       );
     }
   });

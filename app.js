@@ -43,6 +43,9 @@ app.use((req, res, next) => {
 
 app.use(express.static("public"));
 
+app.get("/search", (req, res) => {
+    res.redirect("/search/index.html");
+});
 
 // Load your routes
 

@@ -1,5 +1,7 @@
 # Local frontend (not part of this backend repo)
 /uzabulk-frontend/
+/uzabulk-backend/
+/_push-frontend/
 
 # Node
 node_modules/

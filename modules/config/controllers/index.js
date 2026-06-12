@@ -2,6 +2,7 @@
 
 const mongoose = require("mongoose");
 const { defaultExchangeRate } = require("../../../config/db/constants");
+const { getIntegrationStatus } = require("../../alibaba/services/integrationStatus");
 
 exports.getStoreConfigurations = async (req, res) => {
   try {
@@ -28,6 +29,16 @@ exports.getCurrencies = async (req, res) => {
     }
 
     return res.success("SUCCESS", data);
+  } catch (error) {
+    console.error(error);
+    res.error(error);
+  }
+};
+
+exports.getIntegrations = async (req, res) => {
+  try {
+    const status = await getIntegrationStatus();
+    return res.success("SUCCESS", status);
   } catch (error) {
     console.error(error);
     res.error(error);

@@ -68,7 +68,11 @@ const env = {
         "AUTH_TOKEN": process.env.ALIBABA_AUTH_TOKEN || "",
         "TO_PROVINCE_CODE": "330000",
         "TO_CITY_CODE": "330100",
-        "TO_COUNTRY_CODE": "330108"
+        "TO_COUNTRY_CODE": "330108",
+        "TRADE_ENABLED": String(process.env.ALIBABA_TRADE_ENABLED || "true").toLowerCase() !== "false",
+        "TRADE_FLOW": process.env.ALIBABA_TRADE_FLOW || "general",
+        "OAUTH_ENABLED": String(process.env.ALIBABA_OAUTH_ENABLED || "").toLowerCase() === "true",
+        "OAUTH_REDIRECT_URI": process.env.ALIBABA_OAUTH_REDIRECT_URI || "",
     },
     "google": {
         "VISION_API_KEY": process.env.GOOGLE_VISION_API_KEY || "",

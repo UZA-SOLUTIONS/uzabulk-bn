@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>UZA Bulk — Search</title>
+  <link rel="stylesheet" href="/search/search.css" />
+</head>
+<body>
+  <header class="header">
+    <a href="/search/" class="logo">UZA <span>Bulk</span></a>
+    <p class="tagline">AI-powered wholesale search · 1688 catalog</p>
+  </header>
+
+  <main class="main">
+    <section class="search-section" aria-label="Product search">
+      <form id="searchForm" class="search-box" autocomplete="off">
+        <div class="search-input-wrap">
+          <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+          </svg>
+          <input
+            id="searchInput"
+            type="search"
+            placeholder="Search products — English, French, or describe what you need…"
+            aria-label="Search products"
+          />
+          <button type="button" id="imageSearchBtn" class="image-search-btn" title="Search by image (AI vision)" aria-label="Search by image">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
+              <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/>
+              <path d="M20 6h-2.17L16 4H8L6.17 6H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2Zm0 12H4V8h5.17l1.41-1.41.59-.59h6l.59.59L18.83 8H20v10Z"/>
+              <path d="M17.5 10.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"/>
+            </svg>
+          </button>
+          <input type="file" id="imageFileInput" accept="image/jpeg,image/png,image/webp,image/gif" hidden />
+        </div>
+        <button type="submit" class="search-submit">Search</button>
+      </form>
+
+      <div id="imagePreview" class="image-preview hidden" aria-live="polite">
+        <img id="previewImg" alt="Upload preview" />
+        <button type="button" id="clearImageBtn" class="clear-image">✕ Remove</button>
+      </div>
+
+      <div id="searchMeta" class="search-meta hidden" aria-live="polite"></div>
+      <div id="smartListingCard" class="smart-listing-card hidden" aria-live="polite"></div>
+    </section>
+
+    <div id="loading" class="loading hidden" role="status">
+      <div class="spinner"></div>
+      <span id="loadingText">Searching with AI…</span>
+    </div>
+
+    <section id="resultsSection" class="results-section hidden">
+      <h2 class="section-title">Matching products</h2>
+      <div id="results" class="results" aria-label="Search results"></div>
+    </section>
+    <section id="recommendationsSection" class="results-section hidden">
+      <h2 class="section-title">Recommended for you</h2>
+      <p class="section-sub">AI-picked similar items based on your search</p>
+      <div id="recommendations" class="results" aria-label="Recommended products"></div>
+    </section>
+    <p id="emptyState" class="empty-state">Search by keyword or upload a product photo to find similar wholesale items.</p>
+  </main>
+
+  <script src="/search/search.js"></script>
+</body>
+</html>

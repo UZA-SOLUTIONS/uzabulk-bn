@@ -46,18 +46,23 @@ const extractImageSearchKeywords = async (imageAddress) => {
                 {
                     type: "text",
                     text: [
-                        "You analyze product photos for B2B wholesale catalog search.",
+                        "You analyze ANY product photo for B2B wholesale search — the item may NOT be in our catalog.",
+                        "Identify the main object, name it clearly, and suggest how to find similar wholesale products.",
                         "Return JSON only (no markdown):",
                         "{",
+                        '  "object_label": string,',
                         '  "primaryKeyword": string,',
                         '  "keywords": string[],',
                         '  "search_phrase": string,',
                         '  "category": string,',
-                        '  "product_type": string',
+                        '  "product_type": string,',
+                        '  "color": string,',
+                        '  "material": string',
                         "}",
-                        "primaryKeyword = best short English search term.",
-                        "keywords = up to 8 related search terms including color/material/type.",
-                        "search_phrase = one natural language phrase for semantic search.",
+                        "object_label = plain English name of what you see (e.g. 'blue running shoes').",
+                        "primaryKeyword = best short wholesale search term (2-5 words).",
+                        "keywords = up to 8 related terms: type, color, material, use-case, style.",
+                        "search_phrase = one natural language phrase describing the product for semantic search.",
                     ].join("\n"),
                 },
             ],
@@ -68,10 +73,13 @@ const extractImageSearchKeywords = async (imageAddress) => {
     const parsed = parseJsonFromLlm(response.choices?.[0]?.message?.content || "");
     const keywords = [];
     const seen = new Set();
+    appendKeyword(keywords, seen, parsed?.object_label);
     appendKeyword(keywords, seen, parsed?.primaryKeyword);
     appendKeyword(keywords, seen, parsed?.search_phrase);
     appendKeyword(keywords, seen, parsed?.product_type);
     appendKeyword(keywords, seen, parsed?.category);
+    appendKeyword(keywords, seen, parsed?.color);
+    appendKeyword(keywords, seen, parsed?.material);
     (Array.isArray(parsed?.keywords) ? parsed.keywords : []).forEach((k) => appendKeyword(keywords, seen, k));
 
     const primaryKeyword = keywords[0] || normalizeKeyword(parsed?.search_phrase);
@@ -79,12 +87,16 @@ const extractImageSearchKeywords = async (imageAddress) => {
 
     return {
         provider: "dashscope",
+        objectLabel: String(parsed?.object_label || parsed?.product_type || primaryKeyword || "").trim(),
         primaryKeyword,
         keywords,
         searchPhrase: normalizeKeyword(parsed?.search_phrase) || primaryKeyword,
         attributes: {
             category: parsed?.category || "",
             product_type: parsed?.product_type || "",
+            color: parsed?.color || "",
+            material: parsed?.material || "",
+            object_label: String(parsed?.object_label || "").trim(),
         },
     };
 };

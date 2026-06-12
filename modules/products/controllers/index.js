@@ -19,7 +19,7 @@ const {
 const { runSmartListing, analyzeProductImage: analyzeImageAi } = require('../../ai/services/smartListingService');
 const { getSimilarProducts, ensureProductEmbedding } = require('../services/similarProductsService');
 const { ensureRelatedProducts } = require('../services/aiRecommendationService');
-const { searchCatalogByText } = require('../../ai/services/aiCatalogSearchHelper');
+const { searchCatalogByText } = require('../services/catalogSearchService');
 const {
     resolveImageSearchFromAi,
     extractImageSearchKeywords,
@@ -29,8 +29,26 @@ const {
     expandCategoryFilterIds,
     buildMongoCategoryMatch,
 } = require('../services/categoryFilterHelper');
+const { runImageSearchPipeline, searchAlibabaCatalogByKeywords } = require('../helper/imageSearchPipeline');
+const { resolveSmartImageSearch } = require('../../ai/services/smartImageSearchService');
+const { expandSearchQuery } = require('../../ai/services/aiTextSearchService');
+const { isElasticsearchReachable } = require('../../../elasticsearch/availability');
 
 const looksLikeObjectId = (value) => /^[a-fA-F0-9]{24}$/.test(String(value || "").trim());
+
+const withRequestTimeout = async (promise, timeoutMs, fallback) => {
+    let timer;
+    try {
+        return await Promise.race([
+            promise,
+            new Promise((resolve) => {
+                timer = setTimeout(() => resolve(fallback), timeoutMs);
+            }),
+        ]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+};
 const escapeRegex = (value = "") => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const normalizeSearchText = (value = "") => String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
 
@@ -397,33 +415,24 @@ module.exports = {
             if (!search)
                 return res.success("RECORD_FOUND", []);
 
-            let items = [];
-            try {
-                const aiSearch = await searchCatalogByText({
+            const aiSearch = await withRequestTimeout(
+                searchCatalogByText({
                     search,
                     limit,
                     skip,
                     category,
-                });
-                items = await resolveActiveCatalogItems(aiSearch.items);
-                items = normalizeFeaturedImageLink(items);
-            } catch (error) {
-                const mongoQuery = getMongoListQuery({ category, search });
-                items = await Product.getNewArrivalsProducts(mongoQuery, { limit, skip });
-                items = normalizeFeaturedImageLink(items);
-                items = filterItemsBySearchTokens(items, search);
-            }
+                    fast: true,
+                }),
+                10000,
+                { items: [], total: 0, searchMeta: { searchQuery: search } }
+            );
+            const items = normalizeFeaturedImageLink(aiSearch.items || []);
 
-            if (search && items.length) {
-                trackProductBehavior(req, {
-                    eventType: "search",
-                    search,
-                    score: 1,
-                    metadata: { category, resultCount: items.length },
-                });
-            }
-
-            return res.success("RECORD_FOUND", items);
+            return res.success("RECORD_FOUND", items, {
+                searchMeta: aiSearch.searchMeta || {
+                    searchQuery: search,
+                },
+            });
 
         } catch (error) {
             console.error(error);
@@ -747,186 +756,48 @@ module.exports = {
                 }));
             }
 
-            if (imageUrl && !String(search || "").trim()) {
-                try {
-                    const aiImageResult = await resolveImageSearchFromAi({
-                        imageAddress: imageUrl,
-                        limit,
-                        skip,
-                        category,
-                        fieldName,
-                        fieldValue,
-                    });
-                    if (aiImageResult?.vision?.primaryKeyword) {
-                        let items = await resolveActiveCatalogItems(aiImageResult.items || []);
-                        items = items.slice(0, limit);
-                        const categoryData = category ? await _model.Category.findById(category) : null;
-                        await priceExchange(items, req.exchangeRate);
-                        return res.success(req.nextPageOptions(items, items.length ? 500 : 0, {
-                            category: categoryData,
-                            imageSearch: true,
-                            imageSearchProvider: "dashscope",
-                            imageSearchKeyword: aiImageResult.vision.primaryKeyword,
-                            imageSearchKeywords: aiImageResult.vision.keywords,
-                            imageSearchPhrase: aiImageResult.vision.searchPhrase,
-                        }));
-                    }
-                } catch (aiImageError) {
-                    console.warn("DashScope image search failed, using fallback:", aiImageError?.message || aiImageError);
-                }
-
-                let googleImageSearch = null;
-                try {
-                    googleImageSearch = await searchGoogleImageKeywords({
-                        imageAddress: imageUrl,
-                    });
-                } catch (googleError) {
-                    console.warn("Google image search failed:", googleError?.message || googleError);
-                }
-
-                if (googleImageSearch?.primaryKeyword) {
-                    const googleSearchQuery = {
-                        category,
-                        fieldName,
-                        fieldValue,
-                        search: googleImageSearch.primaryKeyword,
-                        limit,
-                        skip,
-                    };
-
-                    let googleRawItems = unwrapEsSearchResult(
-                        await esProductService.list(googleSearchQuery)
-                    ).items;
-
-                    // If first keyword is too narrow, enrich from additional keywords.
-                    if (googleRawItems.length < limit && Array.isArray(googleImageSearch.keywords)) {
-                        const seen = new Set(googleRawItems.map((item) => String(item?._id || item?.offerId || "")));
-                        for (const keyword of googleImageSearch.keywords.slice(1, 4)) {
-                            if (!keyword) continue;
-                            const { items: extra } = unwrapEsSearchResult(
-                                await esProductService.list({
-                                    ...googleSearchQuery,
-                                    search: keyword,
-                                    skip: 1,
-                                    limit,
-                                })
-                            );
-                            extra.forEach((item) => {
-                                const key = String(item?._id || item?.offerId || "");
-                                if (!key || seen.has(key)) return;
-                                seen.add(key);
-                                googleRawItems.push(item);
-                            });
-                            if (googleRawItems.length >= limit) break;
-                        }
-                    }
-
-                    let items = await resolveActiveCatalogItems(googleRawItems);
-                    items = items.slice(0, limit);
-
-                    const categoryData = category ? await _model.Category.findById(category) : null;
-                    await priceExchange(items, req.exchangeRate);
-
-                    return res.success(req.nextPageOptions(items, items.length ? 500 : 0, {
-                        category: categoryData,
-                        imageSearch: true,
-                        imageSearchProvider: "google",
-                        imageSearchKeyword: googleImageSearch.primaryKeyword,
-                        imageSearchKeywords: googleImageSearch.keywords,
-                    }));
-                }
-
-                const hasLocalUpload = Boolean(guessLocalImagePath(imageUrl));
-                const localImageSearch = hasLocalUpload
-                    ? null
-                    : await searchLocalImage({
-                        imageAddress: imageUrl,
-                        limit,
-                    });
-                if (localImageSearch?.offerIds?.length) {
-                    const items = await mapProductsByOfferOrder(localImageSearch.offerIds);
-                    const categoryData = category ? await _model.Category.findById(category) : null;
-                    await priceExchange(items, req.exchangeRate);
-                    return res.success(req.nextPageOptions(items.slice(0, limit), items.length, {
-                        category: categoryData,
-                        imageSearch: true,
-                        imageSearchProvider: "local",
-                    }));
-                }
-
-                // If prebuilt index is unavailable, run live local matching on a small candidate set.
-                const liveCandidates = await _model.Product.find({ status: "active" })
-                    .select("offerId name featured_image")
-                    .populate({ path: "featured_image", select: "link -_id" })
-                    .sort({ date_created_utc: -1 })
-                    .limit(120)
-                    .lean();
-                const localLive = hasLocalUpload
-                    ? null
-                    : await searchLocalImageLive({
-                        imageAddress: imageUrl,
-                        limit,
-                        candidates: liveCandidates.map((p) => ({
-                            offerId: p?.offerId,
-                            name: p?.name,
-                            imageUrl: typeof p?.featured_image === "string" ? p.featured_image : p?.featured_image?.link,
-                        })),
-                    });
-                if (localLive?.offerIds?.length) {
-                    const items = await mapProductsByOfferOrder(localLive.offerIds);
-                    const categoryData = category ? await _model.Category.findById(category) : null;
-                    await priceExchange(items, req.exchangeRate);
-                    return res.success(req.nextPageOptions(items.slice(0, limit), items.length, {
-                        category: categoryData,
-                        imageSearch: true,
-                        imageSearchProvider: "local",
-                    }));
-                }
-
-                const beginPage = Math.floor(skip / limit) + 1;
+            if (imageUrl) {
+                const pageNum = Math.max(1, Math.floor(skip / limit) + 1);
                 const imageCountry =
                     typeof country === "string" && country.trim() ? country.trim() : "en";
 
-                let alibabaResult = null;
-                try {
-                    alibabaResult = await searchImageQuery({
-                        imageAddress: imageUrl,
-                        beginPage,
-                        pageSize: limit,
-                        country: imageCountry,
-                    });
-                } catch (alibabaError) {
-                    console.warn("1688 image search unavailable:", alibabaError?.message || alibabaError);
+                const result = await resolveSmartImageSearch({
+                    imageUrl,
+                    limit,
+                    skip: pageNum,
+                    category,
+                    fieldName,
+                    fieldValue,
+                    country: imageCountry,
+                });
+
+                const items = result.items || [];
+                const recommendations = result.recommendations || [];
+                const categoryData = category ? await _model.Category.findById(category) : null;
+                await priceExchange(items, req.exchangeRate);
+                if (recommendations.length) {
+                    await priceExchange(recommendations, req.exchangeRate);
                 }
 
-                const rows = Array.isArray(alibabaResult?.data) ? alibabaResult.data : [];
-                const offerIds = rows
-                    .map((r) => String(r?.offerId ?? "").trim())
-                    .filter(Boolean);
-                let items = await mapProductsByOfferOrder(offerIds);
-
-                const totalRecords =
-                    typeof alibabaResult?.totalRecords === "number"
-                        ? alibabaResult.totalRecords
-                        : items.length;
-
-                await priceExchange(items, req.exchangeRate);
-                const categoryData = category ? await _model.Category.findById(category) : null;
-
-                const pageNum = Number(req.query.skip) || 1;
-                const total = totalRecords || 0;
-                const totalPages = limit > 0 ? Math.ceil(total / limit) : 0;
-                const hasMore = totalPages > 0 ? pageNum < totalPages : false;
-
-                return res.success({
+                const vision = result.vision || {};
+                return res.success(req.nextPageOptions(
                     items,
-                    total,
-                    skip: pageNum,
-                    limit,
-                    totalPages: totalPages || 0,
-                    hasMore,
-                    others: { category: categoryData, imageSearch: true, imageSearchProvider: "alibaba" },
-                });
+                    result.total || items.length,
+                    {
+                        category: categoryData,
+                        imageSearch: true,
+                        imageSearchProvider: result.provider || "none",
+                        imageSearchKeyword: vision.primaryKeyword || vision.objectLabel || String(search || "").trim(),
+                        imageSearchObjectLabel: vision.objectLabel || vision.primaryKeyword || "",
+                        imageSearchKeywords: vision.keywords || [],
+                        imageSearchPhrase: vision.searchPhrase || "",
+                        imageUrl,
+                        smartListing: result.smartListing || null,
+                        smartListingAttributes: vision.attributes || result.smartListing?.attributes || null,
+                        recommendations,
+                        smartRecommendations: recommendations.length > 0,
+                    }
+                ));
             }
 
             let items = [];
@@ -940,43 +811,52 @@ module.exports = {
             let aiSearchMeta = null;
 
             try {
-                let esPayload;
                 if (search) {
-                    const aiTextSearch = await searchCatalogByText({
-                        search,
-                        limit,
-                        skip,
-                        category,
-                        fieldName,
-                        fieldValue,
-                        singleCategoryOnly: onlySingleCategory,
-                    });
-                    esPayload = {
-                        items: aiTextSearch.items,
-                        total: aiTextSearch.total,
-                        tookMs: 0,
-                        timedOut: false,
-                        searchMeta: aiTextSearch.searchMeta,
-                    };
+                    const aiTextSearch = await withRequestTimeout(
+                        searchCatalogByText({
+                            search,
+                            limit,
+                            skip,
+                            category,
+                            fieldName,
+                            fieldValue,
+                            singleCategoryOnly: onlySingleCategory,
+                        }),
+                        12000,
+                        { items: [], total: 0, searchMeta: { engine: "mongo_fallback", searchQuery: search } }
+                    );
+                    rawEsItems = aiTextSearch.items || [];
+                    esTotalHits = aiTextSearch.total || 0;
+                    aiSearchMeta = aiTextSearch.searchMeta || null;
+                    const searchEngine = aiSearchMeta?.engine || "";
+                    const useDirectSearchItems =
+                        !searchEngine ||
+                        searchEngine.includes("mongo") ||
+                        searchEngine.includes("alibaba");
+                    if (useDirectSearchItems) {
+                        items = normalizeFeaturedImageLink(rawEsItems);
+                    } else {
+                        items = await resolveActiveCatalogItems(rawEsItems);
+                    }
+
                 } else {
-                    esPayload = unwrapEsSearchResult(
+                    const esPayload = unwrapEsSearchResult(
                         await esProductService.list({
                             category, fieldName, fieldValue, search,
                             limit, skip,
                             singleCategoryOnly: onlySingleCategory,
                         })
                     );
+                    rawEsItems = esPayload.items;
+                    esTotalHits = esPayload.total;
+                    esTookMs = esPayload.tookMs || 0;
+                    esTimedOut = esPayload.timedOut || false;
+                    items = await resolveActiveCatalogItems(rawEsItems);
                 }
-                rawEsItems = esPayload.items;
-                esTotalHits = esPayload.total;
-                esTookMs = esPayload.tookMs || 0;
-                esTimedOut = esPayload.timedOut || false;
-                items = await resolveActiveCatalogItems(rawEsItems);
                 const resolvedCount = items.length;
                 const hasMoreFromEs = skip + resolvedCount < esTotalHits;
                 total = hasMoreFromEs ? skip + resolvedCount + 1 : skip + resolvedCount;
                 usedElasticsearch = true;
-                aiSearchMeta = esPayload.searchMeta || null;
             } catch (error) {
                 const mongoQuery = getMongoListQuery({
                     category, fieldName, fieldValue, search, singleCategoryOnly: onlySingleCategory,
@@ -1006,10 +886,9 @@ module.exports = {
             if (usedElasticsearch) {
                 listExtras.hasMore = skip + items.length < esTotalHits;
                 listExtras.searchMeta = {
-                    engine: "elasticsearch",
                     latencyMs: esTookMs,
                     timedOut: esTimedOut,
-                    ...(aiSearchMeta || {}),
+                    ...(aiSearchMeta || { engine: "elasticsearch" }),
                 };
             } else if (typeof mongoHasMore === "boolean") {
                 listExtras.hasMore = mongoHasMore;
@@ -1017,22 +896,6 @@ module.exports = {
                     engine: "mongo_fallback",
                 };
             }
-            if (search && items.length) {
-                trackProductBehavior(req, {
-                    eventType: "search",
-                    search,
-                    score: 1,
-                    metadata: {
-                        category,
-                        fieldName,
-                        fieldValue,
-                        resultCount: items.length,
-                        source: usedElasticsearch ? "es" : "mongo_fallback",
-                        latencyMs: usedElasticsearch ? esTookMs : undefined,
-                    },
-                });
-            }
-
             return res.success(req.nextPageOptions(items, total, listExtras));
 
         } catch (error) {
@@ -1140,7 +1003,7 @@ module.exports = {
         }
     },
 
-    /** Upload image + AI vision search (single request from search bar). */
+    /** Upload image + smart listing + similar products + recommendations. */
     imageSearchUpload: async (req, res) => {
         try {
             const file = req.file;
@@ -1149,40 +1012,56 @@ module.exports = {
             }
 
             const imageUrl = String(file.location).trim();
-            const { limit } = req.paginationOptions;
+            const { limit, skip } = req.paginationOptions;
+            const { category, fieldName, fieldValue, country } = req.query;
 
-            const aiImageResult = await resolveImageSearchFromAi({
-                imageAddress: imageUrl,
+            const result = await resolveSmartImageSearch({
+                imageUrl,
                 limit,
-                skip: 1,
+                skip: Math.max(1, Math.floor((skip || 0) / limit) + 1),
+                category,
+                fieldName,
+                fieldValue,
+                country,
             });
 
-            let items = await resolveActiveCatalogItems(aiImageResult?.items || []);
-            items = items.slice(0, limit);
+            const items = result.items || [];
+            const recommendations = result.recommendations || [];
             await priceExchange(items, req.exchangeRate);
+            if (recommendations.length) {
+                await priceExchange(recommendations, req.exchangeRate);
+            }
 
-            const vision = aiImageResult?.vision || {};
-            if (vision.primaryKeyword) {
+            const vision = result.vision || {};
+            const searchTerm = vision.primaryKeyword || vision.searchPhrase || "";
+            if (searchTerm) {
                 trackProductBehavior(req, {
                     eventType: "search",
-                    search: vision.primaryKeyword,
+                    search: searchTerm,
                     score: 1,
                     metadata: {
                         imageSearch: true,
+                        smartListing: Boolean(result.smartListing),
                         imageUrl,
-                        provider: vision.provider || "dashscope",
+                        provider: result.provider,
                         resultCount: items.length,
+                        recommendationCount: recommendations.length,
                     },
                 });
             }
 
-            return res.success(req.nextPageOptions(items, items.length ? 500 : 0, {
+            return res.success(req.nextPageOptions(items, result.total || items.length, {
                 imageSearch: true,
-                imageSearchProvider: vision.provider || "dashscope",
-                imageSearchKeyword: vision.primaryKeyword || "",
+                imageSearchProvider: result.provider || "none",
+                imageSearchKeyword: vision.primaryKeyword || vision.objectLabel || "",
+                imageSearchObjectLabel: vision.objectLabel || vision.primaryKeyword || "",
                 imageSearchKeywords: vision.keywords || [],
                 imageSearchPhrase: vision.searchPhrase || "",
                 imageUrl,
+                smartListing: result.smartListing || null,
+                smartListingAttributes: vision.attributes || result.smartListing?.attributes || null,
+                recommendations,
+                smartRecommendations: recommendations.length > 0,
             }));
         } catch (error) {
             console.error("imageSearchUpload", error);

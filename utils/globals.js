@@ -26,4 +26,14 @@ global._model = global._model || {};
 
 // Set environment variables based on NODE_ENV
 const envFile = process.env.NODE_ENV === 'production' ? '../config/env' : '../config/env-stagging';
-global.env = require(envFile)
+global.env = require(envFile);
+
+// 1688 OAuth token resolver — used by all Alibaba API modules
+try {
+    const { initTokenResolver } = require("../modules/alibaba/services/oauthService");
+    initTokenResolver();
+} catch (oauthInitErr) {
+    if (global.logger?.warn) {
+        global.logger.warn("1688 OAuth token resolver not initialized:", oauthInitErr.message);
+    }
+}

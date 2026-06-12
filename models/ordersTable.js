@@ -61,6 +61,22 @@ let orderSchema = new mongoose.Schema({
     slipUploadStatus: { type: String, enum: ["pending", "uploaded"], default: "pending" },
     slipLink: String,
     orderGroupId: String,
+    offerId: { type: String, default: "" },
+    alibaba1688: {
+        trade_id: { type: String, default: "" },
+        primary_order_id: { type: String, default: "" },
+        order_ids: { type: [String], default: [] },
+        third_order_id: { type: String, default: "" },
+        status: { type: String, default: "" },
+        payment_url: { type: String, default: "" },
+        relayed_at: { type: Date },
+        payment_confirmed_at: { type: Date },
+        last_synced_at: { type: Date },
+        logistics: { type: Array, default: [] },
+        buyer_view: { type: Object, default: null },
+        raw_create_response: { type: Object, default: null },
+        relay_error: { type: String, default: "" },
+    },
     meta_data: [
         {
             key: { type: String },

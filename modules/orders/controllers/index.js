@@ -7,6 +7,12 @@ const helper = require("../helper");
 const { getDate, paymentSlipUploadLink, verifyToken } = require('../../../utils');
 const { v4: uuidv4 } = require('uuid');
 const { trackProductBehavior } = require('../../products/services/recommendationService');
+const {
+    relayOrderTo1688,
+    sync1688OrderState,
+    confirm1688Payment,
+} = require('../services/alibabaOrderRelay');
+const OrderModel = require('../../../models/ordersTable');
 
 const trackCheckoutLineItems = (req, lineItems = [], eventType = "checkout") => {
     lineItems.forEach((lineItem) => {
@@ -154,6 +160,15 @@ module.exports = {
         try {
             const checkout = await module.exports.checkoutCalculationMiddleware(req);
             trackCheckoutLineItems(req, checkout.line_items, "checkout");
+
+            checkout.alibaba1688 = {
+                trade_enabled: String(process.env.ALIBABA_TRADE_ENABLED || "true").toLowerCase() !== "false",
+                line_items: (checkout.line_items || []).map((line) => ({
+                    offerId: line.offerId || null,
+                    relay_eligible: Boolean(line.offerId && (line.items || []).every((i) => i.spec_id || i.sku_id || i.variation_id)),
+                })),
+            };
+
             return res.success(checkout);
 
         } catch (error) {
@@ -177,6 +192,7 @@ module.exports = {
                     user: user._id,
                     vendor: cartItem.vendor?._id,
                     line_items: cartItem.items,
+                    offerId: cartItem.offerId ? String(cartItem.offerId) : "",
                     subTotal: cartItem.subTotal,
                     orderTotal: helper.toFixedNumber((cartItem.subTotal + cartItem.deliveryFee + cartItem.tax) - cartItem.discountTotal),
                     discountTotal: cartItem.discountTotal,
@@ -204,18 +220,49 @@ module.exports = {
             }
 
             if (orders.length) {
-                await Order.createMany(orders);
+                const insertedOrders = await Order.createMany(orders);
+
+                for (let i = 0; i < insertedOrders.length; i += 1) {
+                    const inserted = insertedOrders[i];
+                    const cartLine = checkout.line_items[i];
+                    if (!cartLine?.offerId) continue;
+
+                    try {
+                        const relay = await relayOrderTo1688({
+                            order: inserted,
+                            offerId: cartLine.offerId,
+                            lineItems: inserted.line_items,
+                        });
+
+                        if (relay.ok && relay.alibaba1688) {
+                            await OrderModel.updateOne(
+                                { _id: inserted._id },
+                                { $set: { alibaba1688: relay.alibaba1688 } }
+                            );
+                            inserted.alibaba1688 = relay.alibaba1688;
+                        } else if (!relay.skipped && relay.error) {
+                            await OrderModel.updateOne(
+                                { _id: inserted._id },
+                                { $set: { "alibaba1688.relay_error": String(relay.error) } }
+                            );
+                            console.warn(`[1688-relay] Order ${inserted._id}: ${relay.error}`);
+                        }
+                    } catch (relayErr) {
+                        console.error(`[1688-relay] Order ${inserted._id}:`, relayErr.message);
+                    }
+                }
+
                 trackCheckoutLineItems(req, checkout.line_items, "order");
                 // Clear the cart for the processed order
                 await Cart.clearCartByIds(cart_ids);
 
                 try {
-                    Order.sendOrderEmails({ user, orders });
-                    Order.updateProductStocks(orders);
+                    Order.sendOrderEmails({ user, orders: insertedOrders });
+                    Order.updateProductStocks(insertedOrders);
                 }
                 catch (err) { console.log(err); }
 
-                return res.success("ORDER_SUCCESS", orders);
+                return res.success("ORDER_SUCCESS", insertedOrders);
             }
 
             return res.error("SOMETHING_WENT_WRONG");
@@ -225,6 +272,54 @@ module.exports = {
             res.error(error);
         }
     },
+
+    sync1688: async (req, res) => {
+        try {
+            const _id = req.params.id || req.params._id;
+            const order = await Order.orderById(_id);
+            if (!order) {
+                return res.error("INVALID_ORDER_ID");
+            }
+
+            const result = await sync1688OrderState(order);
+            if (!result.ok) {
+                return res.error(result.error || "SYNC_FAILED");
+            }
+
+            await OrderModel.updateOne({ _id }, { $set: result.updates });
+            const updated = await Order.orderById(_id);
+            return res.success("RECORD_FOUND", updated);
+        } catch (error) {
+            console.error(error);
+            return res.error(error);
+        }
+    },
+
+    logistics1688: async (req, res) => {
+        try {
+            const _id = req.params.id || req.params._id;
+            const order = await Order.orderById(_id);
+            if (!order) {
+                return res.error("INVALID_ORDER_ID");
+            }
+
+            const result = await sync1688OrderState(order);
+            if (result.ok && result.updates) {
+                await OrderModel.updateOne({ _id }, { $set: result.updates });
+            }
+
+            const updated = await Order.orderById(_id);
+            return res.success("RECORD_FOUND", {
+                order_id: _id,
+                alibaba1688: updated.alibaba1688,
+                logistics: updated.alibaba1688?.logistics || [],
+            });
+        } catch (error) {
+            console.error(error);
+            return res.error(error);
+        }
+    },
+
     createSlipUploadLink: async (req, res) => {
         try {
             const { orderId } = req.params;
@@ -290,18 +385,34 @@ module.exports = {
                 return res.error("INVALID_LINK");
             }
 
-            const orders = await _model.Order
-                .updateMany(
-                    { _id: { $in: tokenData.orderIds } },
-                    {
-                        $set: {
-                            slipUploadStatus: "uploaded",
-                            slipLink
-                        }
-                    }
-                );
+            const orderDocs = await _model.Order
+                .find({ _id: { $in: tokenData.orderIds } })
+                .lean();
 
-            return res.success("SLIP_UPLOADED", orders);
+            await _model.Order.updateMany(
+                { _id: { $in: tokenData.orderIds } },
+                {
+                    $set: {
+                        slipUploadStatus: "uploaded",
+                        slipLink,
+                    },
+                }
+            );
+
+            for (const order of orderDocs) {
+                if (order?.alibaba1688?.primary_order_id || order?.alibaba1688?.trade_id) {
+                    try {
+                        const payResult = await confirm1688Payment(order);
+                        if (payResult.ok && payResult.updates) {
+                            await OrderModel.updateOne({ _id: order._id }, { $set: payResult.updates });
+                        }
+                    } catch (payErr) {
+                        console.warn(`[1688-pay] Order ${order._id}: ${payErr.message}`);
+                    }
+                }
+            }
+
+            return res.success("SLIP_UPLOADED", orderDocs.length);
 
         } catch (error) {
             console.error(error)

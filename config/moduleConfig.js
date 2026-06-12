@@ -62,6 +62,13 @@ const moduleConfig = [
         "route": true,
         "routeName": "file"
     },
+    {
+        "type": "alibaba",
+        "apiVersion": "v1",
+        "status": true,
+        "route": true,
+        "routeName": "alibaba"
+    },
 ]
 
 module.exports = moduleConfig;

@@ -42,6 +42,8 @@ let generateLineItems = async (product, items) => {
 
             obj.price = getVariation.price;
             obj.variation_id = getVariation._id;
+            obj.sku_id = getVariation.skuId;
+            obj.spec_id = getVariation.specId || getVariation.skuId;
             obj.attributes = attrArray;
 
         }
@@ -57,7 +59,7 @@ let generateLineItems = async (product, items) => {
         itemTotal += obj.amount;
     };
 
-    return { items: updateItems, itemTotal };
+    return { items: itemArray, itemTotal };
 };
 const validateVariation = async (variation_id, quantity) => {
     if (!variation_id) {
@@ -129,11 +131,13 @@ const verifyAvailStock = (item) => {
 let checkStock = async (items, isOrder = false) => {
     for (let index = 0; index < items.length; index++) {
         if (items[index].variation_id) {
-            let variationData = await ProductService.variationById(items[index].variation_id, "manage_stock stock_quantity stock_status");
+            let variationData = await ProductService.variationById(items[index].variation_id, "manage_stock stock_quantity stock_status skuId specId");
             items[index].stock = {
                 instock: variationData.manage_stock ? variationData.stock_quantity > 0 : (!variationData.manage_stock && variationData.stock_status === "instock" ? true : false),
                 quantity: variationData.manage_stock ? variationData.stock_quantity : null,
             };
+            items[index].sku_id = items[index].sku_id || variationData.skuId;
+            items[index].spec_id = variationData.specId || variationData.skuId;
         }
         else {
             let productData = await ProductService.productById(items[index].product, "manage_stock stock_quantity stock_status");
@@ -182,6 +186,7 @@ let generateLineItemsForCheckOut = async (exchangeRateOpt, data, carts, addressI
             cart_id: element._id,
             cart_key: element.cart_key,
             vendor: element.product?.vendor,
+            offerId: element.product?.offerId || "",
             subTotal: itemsSubTotal,
             items: items,
             tax,

@@ -15,13 +15,14 @@ schema.index({ count: -1, updated_at: -1 }, { name: "filter_for_get" });
 
 schema.statics = {
     set: async function (search) {
-        const hasRes = await this.findOne({ search: new RegExp(`^${search}`) });
+        const term = String(search || "").trim().toLowerCase();
+        if (!term) return;
+        const hasRes = await this.findOne({ search: term });
         if (hasRes) {
             hasRes.count += 1;
             await hasRes.save();
-        }
-        else {
-            await this.create({ search });
+        } else {
+            await this.create({ search: term });
         }
     },
 
