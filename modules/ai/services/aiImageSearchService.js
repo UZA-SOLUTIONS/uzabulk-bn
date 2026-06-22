@@ -1,15 +1,16 @@
-const Product = require("../../../models/productsTable");
 const { isDashscopeConfigured } = require("../dashscopeClient");
 const { getDashscopeClient } = require("../dashscopeClient");
 const { parseJsonFromLlm } = require("../helpers/parseJsonFromLlm");
 const { getVisionModel } = require("../helpers/resolveChatModel");
 const { resolveVisionImageInput } = require("../helpers/resolveVisionImageInput");
-const {
-    getEmbedding,
-    cosineSimilarity,
-} = require("./embeddingService");
-const esProductService = require("../../products/services/esProductService");
-const { attachProductRatingsFromStored } = require("../../products/helper/ratings");
+const { getEmbedding } = require("./embeddingService");
+const { searchProductsByVector } = require("../../products/services/vectorSearchService");
+
+const getSearchCatalogByText = () =>
+    require("../../products/services/catalogSearchService").searchCatalogByText;
+
+const getSearchCatalogForImage = () =>
+    require("../../products/services/catalogSearchService").searchCatalogForImage;
 
 const isAiImageSearchEnabled = () => {
     if (!isDashscopeConfigured()) return false;
@@ -101,11 +102,6 @@ const extractImageSearchKeywords = async (imageAddress) => {
     };
 };
 
-const unwrapEsSearchResult = (result) => {
-    if (Array.isArray(result)) return { items: result, total: 0 };
-    return { items: result?.items || [], total: typeof result?.total === "number" ? result.total : 0 };
-};
-
 const searchCatalogByKeywords = async ({
     primaryKeyword,
     keywords = [],
@@ -114,55 +110,77 @@ const searchCatalogByKeywords = async ({
     category,
     fieldName,
     fieldValue,
+    fast = false,
 } = {}) => {
     const cap = Math.max(1, Math.min(Number(limit) || 32, 100));
-    const baseQuery = { category, fieldName, fieldValue, limit: cap, skip };
-
-    let merged = [];
+    const merged = [];
     const seen = new Set();
 
-    const runTerm = async (term) => {
-        if (!term) return;
+    const ingest = (items = []) => {
+        items.forEach((item) => {
+            const key = String(item?._id || item?.offerId || "");
+            if (!key || seen.has(key)) return;
+            seen.add(key);
+            merged.push(item);
+        });
+    };
+
+    const uniqueKeywords = [...new Set(
+        [primaryKeyword, ...(Array.isArray(keywords) ? keywords : [])]
+            .map((term) => String(term || "").trim())
+            .filter((term) => term.length >= 2)
+    )];
+
+    const buildNeedles = () => {
+        const needles = [];
+        const seenNeedles = new Set();
+        const add = (value) => {
+            const term = String(value || "").trim();
+            if (!term || term.length < 2 || seenNeedles.has(term.toLowerCase())) return;
+            seenNeedles.add(term.toLowerCase());
+            needles.push(term);
+        };
+
+        uniqueKeywords.forEach((term) => {
+            const words = term.toLowerCase().split(/\s+/).filter((token) => token.length >= 2);
+            if (words.length >= 2) {
+                add(words.slice(-2).join(" "));
+            }
+        });
+
+        uniqueKeywords.forEach((term) => add(term));
+
+        return needles.slice(0, 5);
+    };
+
+    const runCatalogSearch = async (search) => {
+        if (!search || merged.length >= cap) return;
         try {
-            const { items } = unwrapEsSearchResult(
-                await esProductService.list({
-                    ...baseQuery,
-                    search: term,
-                    orderBy: "relevance",
-                    order: -1,
-                })
-            );
-            items.forEach((item) => {
-                const key = String(item?._id || item?.offerId || "");
-                if (!key || seen.has(key)) return;
-                seen.add(key);
-                merged.push(item);
-            });
+            const result = fast
+                ? await getSearchCatalogForImage()({ search, limit: cap, category })
+                : await getSearchCatalogByText()({
+                    search,
+                    limit: cap,
+                    skip,
+                    category,
+                    fieldName,
+                    fieldValue,
+                    fast: true,
+                    skipExternal: true,
+                });
+            ingest(result?.items || []);
         } catch (error) {
-            console.warn(`Image keyword search failed for "${term}":`, error?.message || error);
+            console.warn(`Image keyword search failed for "${search}":`, error?.message || error);
         }
     };
 
-    await runTerm(primaryKeyword);
-    for (const term of keywords.slice(0, 6)) {
-        if (merged.length >= cap) break;
-        if (term === primaryKeyword) continue;
-        await runTerm(term);
-    }
+    const needles = buildNeedles();
+    const searchNeedles = fast ? needles.slice(0, 1) : needles;
 
-    if (!merged.length && primaryKeyword) {
-        const mongoItems = await Product.find({
-            status: "active",
-            $or: [
-                { name: { $regex: primaryKeyword, $options: "i" } },
-                { short_description: { $regex: primaryKeyword, $options: "i" } },
-            ],
-        })
-            .select("name price compare_price images featured_image average_rating rating_count short_description categories offerId slug")
-            .populate({ path: "featured_image", select: "link -_id" })
-            .limit(cap)
-            .lean();
-        merged = mongoItems;
+    for (const needle of searchNeedles) {
+        if (merged.length >= cap) break;
+        await runCatalogSearch(needle);
+        if (merged.length >= 3) break;
     }
 
     return merged.slice(0, cap);
@@ -175,24 +193,11 @@ const searchCatalogByEmbeddingPhrase = async (phrase, { limit = 32 } = {}) => {
     const cap = Math.max(1, Math.min(Number(limit) || 32, 48));
     const queryVector = await getEmbedding(text.slice(0, 2000));
 
-    const candidates = await Product.find({
-        status: "active",
-        embedding: { $exists: true, $type: "array", $ne: [] },
-    })
-        .select("name price compare_price images featured_image average_rating rating_count short_description categories offerId slug embedding")
-        .populate({ path: "featured_image", select: "link -_id" })
-        .limit(500)
-        .lean();
-
-    return candidates
-        .map((item) => ({
-            item: attachProductRatingsFromStored({ ...item }),
-            score: cosineSimilarity(queryVector, item.embedding),
-        }))
-        .filter((row) => row.score > 0.15)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, cap)
-        .map((row) => row.item);
+    return searchProductsByVector(queryVector, {}, {
+        limit: cap,
+        minScore: 0.15,
+        candidateLimit: 120,
+    });
 };
 
 /**
@@ -226,7 +231,7 @@ const resolveImageSearchFromAi = async ({
         console.warn("AI keyword image search failed:", keywordError?.message || keywordError);
     }
 
-    if (vision.searchPhrase) {
+    if (items.length < 3 && vision.searchPhrase) {
         try {
             const embedded = await searchCatalogByEmbeddingPhrase(vision.searchPhrase, { limit });
             const seen = new Set(items.map((i) => String(i?._id || i?.offerId || "")));

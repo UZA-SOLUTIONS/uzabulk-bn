@@ -183,6 +183,11 @@ const mapOfferToProductStub = (row = {}) => {
     };
 };
 
+const isValidAlibabaImageId = (value) => {
+    const id = String(value || "").trim();
+    return /^\d+$/.test(id) && id.length > 0 && id.length <= 32;
+};
+
 const uploadProductImage = async ({ imageBase64, outMemberId = "" } = {}) => {
     if (!client.isConfigured()) {
         console.error("Alibaba credentials are missing for product.image.upload.");
@@ -205,7 +210,12 @@ const uploadProductImage = async ({ imageBase64, outMemberId = "" } = {}) => {
     }
 
     const imageId = result.data?.data ?? result.data;
-    return imageId != null ? String(imageId) : null;
+    const normalized = imageId != null ? String(imageId).trim() : "";
+    if (!isValidAlibabaImageId(normalized)) {
+        console.warn("[1688] product.image.upload returned invalid imageId");
+        return null;
+    }
+    return normalized;
 };
 
 const searchImageQuery = async ({

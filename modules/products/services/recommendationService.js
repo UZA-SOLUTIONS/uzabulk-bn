@@ -13,6 +13,8 @@ const {
     applyEmbeddingBoost,
     getEmbeddingDiscoveryProducts,
 } = require("./aiRecommendationService");
+const { getPersonalizedSurface } = require("../../recommendations/services/recommendationEngineService");
+const { publishRecommendationEvent } = require("../../recommendations/services/eventStreamService");
 
 const DEFAULT_LIMIT = 24;
 /** Python subprocess budget; override with RECOMMENDER_PYTHON_TIMEOUT_MS (ms), clamped 1.2s–20s. */
@@ -137,6 +139,18 @@ const trackProductBehavior = async (req, {
             score: score || eventScores[eventType] || 1,
             search,
             metadata,
+        });
+
+        publishRecommendationEvent({
+            userId: req?.user?._id || null,
+            deviceId,
+            eventType,
+            productId: resolvedProductId || null,
+            search,
+            score: score || eventScores[eventType] || 1,
+            metadata,
+        }).catch((err) => {
+            console.warn("Recommendation event publish failed:", err.message);
         });
     } catch (error) {
         console.warn("Product behavior tracking failed:", error.message);
@@ -491,6 +505,18 @@ const usePythonRecommender = () =>
 const getRecommendedProducts = async (req, options = {}) => {
     const limit = Math.max(1, Math.min(Number(options.limit) || DEFAULT_LIMIT, 100));
     const category = options.category || null;
+    const engineEnabled = String(process.env.RECOMMENDATION_ENGINE_ENABLED ?? "true").toLowerCase() !== "false";
+
+    if (engineEnabled && isMongoConnected() && !category) {
+        try {
+            const result = await getPersonalizedSurface("homepage_feed", req, { limit });
+            if (result.items?.length) {
+                return result.items.slice(0, limit);
+            }
+        } catch (error) {
+            console.warn("Personalized homepage feed failed, using legacy recommender:", error.message);
+        }
+    }
 
     if (!isMongoConnected()) {
         return getRotatedProducts({

@@ -69,6 +69,20 @@ const moduleConfig = [
         "route": true,
         "routeName": "alibaba"
     },
+    {
+        "type": "recommendations",
+        "apiVersion": "v1",
+        "status": true,
+        "route": true,
+        "routeName": "recommendations"
+    },
+    {
+        "type": "buyerAssistant",
+        "apiVersion": "v1",
+        "status": true,
+        "route": true,
+        "routeName": "buyer-assistant"
+    },
 ]
 
 module.exports = moduleConfig;

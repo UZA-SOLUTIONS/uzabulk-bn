@@ -12,11 +12,14 @@ const {
 const {
     runImageSearchPipeline,
     runAlibabaImageSearch,
+    runLocalVisualSearch,
     searchAlibabaCatalogByKeywords,
     resolveActiveCatalogItems,
 } = require("../../products/helper/imageSearchPipeline");
+const { guessLocalImagePath } = require("../helpers/resolveVisionImageInput");
 const { getSimilarProducts } = require("../../products/services/similarProductsService");
 const { getEmbedding, cosineSimilarity } = require("./embeddingService");
+const { searchGoogleImageKeywords } = require("../../products/services/googleImageSearch");
 const Product = require("../../../models/productsTable");
 
 const isSmartImageSearchEnabled = () => {
@@ -93,7 +96,7 @@ const searchSimilarByEmbedding = async (searchPhrase, { limit = 24, excludeIds =
     })
         .select("name price compare_price images featured_image average_rating rating_count short_description categories offerId slug embedding")
         .populate({ path: "featured_image", select: "link -_id" })
-        .limit(500)
+        .limit(120)
         .lean();
 
     return candidates
@@ -150,53 +153,93 @@ const collectRecommendations = async (mainItems = [], searchPhrase = "", { limit
         .slice(0, cap);
 };
 
-const resolveVisionFromImage = async (imageUrl) => {
-    if (!isSmartImageSearchEnabled() && !isAiImageSearchEnabled()) {
-        return null;
-    }
+const isGoogleVisionFallbackEnabled = () => {
+    const flag = String(process.env.GOOGLE_IMAGE_SEARCH_ENABLED ?? "false").toLowerCase();
+    return flag === "1" || flag === "true";
+};
 
-    try {
-        const kw = await extractImageSearchKeywords(imageUrl);
-        if (kw?.primaryKeyword) return kw;
-    } catch (kwErr) {
-        console.warn("[smart-image-search] Vision keyword extract failed:", kwErr.message);
-    }
+const inferVisionFromItems = (items = []) => {
+    const top = (items || []).find((item) => String(item?.name || "").trim());
+    if (!top) return null;
 
-    try {
-        const attrs = await analyzeProductImage(imageUrl);
-        const ctx = buildSmartListingSearchContext({ attributes: attrs });
-        if (ctx.primaryKeyword || ctx.searchPhrase) {
-            return {
-                provider: "smart-listing-attributes",
-                objectLabel: attrs?.product_type || ctx.primaryKeyword || "",
-                primaryKeyword: ctx.primaryKeyword,
-                keywords: ctx.keywords,
-                searchPhrase: ctx.searchPhrase,
-                attributes: attrs,
-            };
+    const name = String(top.name).trim();
+    if (!name || name === "Product") return null;
+
+    const label = name.split(/\s+/).slice(0, 5).join(" ");
+    return {
+        provider: "match-inference",
+        objectLabel: label,
+        primaryKeyword: label,
+        keywords: name.split(/\s+/).filter((word) => word.length > 2).slice(0, 6),
+        searchPhrase: name,
+    };
+};
+
+const resolveVisionFromImage = async (imageUrl, { fast = false } = {}) => {
+    if (isSmartImageSearchEnabled() || isAiImageSearchEnabled()) {
+        try {
+            const kw = await extractImageSearchKeywords(imageUrl);
+            if (kw?.primaryKeyword) return kw;
+        } catch (kwErr) {
+            console.warn("[smart-image-search] Vision keyword extract failed:", kwErr.message);
         }
-    } catch (attrErr) {
-        console.warn("[smart-image-search] Attribute extract failed:", attrErr.message);
+
+        if (fast) return null;
+
+        try {
+            const attrs = await analyzeProductImage(imageUrl);
+            const ctx = buildSmartListingSearchContext({ attributes: attrs });
+            if (ctx.primaryKeyword || ctx.searchPhrase) {
+                return {
+                    provider: "smart-listing-attributes",
+                    objectLabel: attrs?.product_type || ctx.primaryKeyword || "",
+                    primaryKeyword: ctx.primaryKeyword,
+                    keywords: ctx.keywords,
+                    searchPhrase: ctx.searchPhrase,
+                    attributes: attrs,
+                };
+            }
+        } catch (attrErr) {
+            console.warn("[smart-image-search] Attribute extract failed:", attrErr.message);
+        }
+
+        if (isSmartImageSearchEnabled()) {
+            try {
+                const smartListing = await runSmartListing({ imageUrl });
+                const ctx = buildSmartListingSearchContext(smartListing);
+                return {
+                    provider: "smart-listing",
+                    objectLabel: ctx.primaryKeyword || smartListing?.attributes?.product_type || "",
+                    primaryKeyword: ctx.primaryKeyword,
+                    keywords: ctx.keywords,
+                    searchPhrase: ctx.searchPhrase,
+                    attributes: ctx.attributes,
+                    smartListing,
+                };
+            } catch (smartErr) {
+                console.warn("[smart-image-search] Smart listing failed:", smartErr.message);
+            }
+        }
     }
 
-    if (!isSmartImageSearchEnabled()) return null;
-
-    try {
-        const smartListing = await runSmartListing({ imageUrl });
-        const ctx = buildSmartListingSearchContext(smartListing);
-        return {
-            provider: "smart-listing",
-            objectLabel: ctx.primaryKeyword || smartListing?.attributes?.product_type || "",
-            primaryKeyword: ctx.primaryKeyword,
-            keywords: ctx.keywords,
-            searchPhrase: ctx.searchPhrase,
-            attributes: ctx.attributes,
-            smartListing,
-        };
-    } catch (smartErr) {
-        console.warn("[smart-image-search] Smart listing failed:", smartErr.message);
-        return null;
+    if (isGoogleVisionFallbackEnabled()) {
+        try {
+            const google = await searchGoogleImageKeywords({ imageAddress: imageUrl });
+            if (google?.primaryKeyword) {
+                return {
+                    provider: "google-vision",
+                    objectLabel: google.primaryKeyword,
+                    primaryKeyword: google.primaryKeyword,
+                    keywords: google.keywords || [],
+                    searchPhrase: google.primaryKeyword,
+                };
+            }
+        } catch (googleErr) {
+            console.warn("[smart-image-search] Google vision fallback failed:", googleErr.message);
+        }
     }
+
+    return null;
 };
 
 const searchByVisionContext = async ({
@@ -232,23 +275,25 @@ const searchByVisionContext = async ({
         console.warn("[smart-image-search] Catalog keyword search failed:", catalogErr.message);
     }
 
-    try {
-        const alibabaItems = await searchAlibabaCatalogByKeywords({
-            primaryKeyword: primaryKeyword || searchPhrase,
-            keywords,
-            pageLimit,
-            pageSkip: skip,
-            country,
-        });
-        mergeItems(items, alibabaItems, { scoreBoost: 3 });
-    } catch (alibabaErr) {
-        console.warn("[smart-image-search] 1688 keyword search failed:", alibabaErr.message);
+    if (items.length < 3) {
+        try {
+            const alibabaItems = await searchAlibabaCatalogByKeywords({
+                primaryKeyword: primaryKeyword || searchPhrase,
+                keywords,
+                pageLimit,
+                pageSkip: skip,
+                country,
+            });
+            mergeItems(items, alibabaItems, { scoreBoost: 3 });
+        } catch (alibabaErr) {
+            console.warn("[smart-image-search] 1688 keyword search failed:", alibabaErr.message);
+        }
     }
 
-    if (searchPhrase) {
+    if (items.length < pageLimit && searchPhrase && items.length < 3) {
         try {
             const embedItems = await searchSimilarByEmbedding(searchPhrase, {
-                limit: pageLimit,
+                limit: Math.min(pageLimit, 12),
                 excludeIds: items.map((i) => i._id),
             });
             mergeItems(items, await resolveActiveCatalogItems(embedItems), { scoreBoost: 5 });
@@ -256,11 +301,13 @@ const searchByVisionContext = async ({
             console.warn("[smart-image-search] Embedding search failed:", embedErr.message);
         }
 
-        try {
-            const phraseItems = await searchCatalogByEmbeddingPhrase(searchPhrase, { limit: pageLimit });
-            mergeItems(items, await resolveActiveCatalogItems(phraseItems), { scoreBoost: 3 });
-        } catch (phraseErr) {
-            console.warn("[smart-image-search] Phrase embedding failed:", phraseErr.message);
+        if (items.length < 3) {
+            try {
+                const phraseItems = await searchCatalogByEmbeddingPhrase(searchPhrase, { limit: pageLimit });
+                mergeItems(items, await resolveActiveCatalogItems(phraseItems), { scoreBoost: 3 });
+            } catch (phraseErr) {
+                console.warn("[smart-image-search] Phrase embedding failed:", phraseErr.message);
+            }
         }
     }
 
@@ -270,6 +317,38 @@ const searchByVisionContext = async ({
 /**
  * Full smart image search for uploaded/URL images (including photos not on the platform).
  */
+const isFastImageSearchEnabled = () => {
+    const flag = String(process.env.IMAGE_SEARCH_FAST ?? "true").toLowerCase();
+    return flag !== "0" && flag !== "false";
+};
+
+const VISION_CACHE = new Map();
+const VISION_CACHE_TTL_MS = 10 * 60 * 1000;
+
+const visionCacheKey = (imageUrl = "") =>
+    guessLocalImagePath(imageUrl) || String(imageUrl || "").trim();
+
+const getCachedVision = (imageUrl) => {
+    const key = visionCacheKey(imageUrl);
+    if (!key) return null;
+    const entry = VISION_CACHE.get(key);
+    if (!entry || Date.now() - entry.ts > VISION_CACHE_TTL_MS) {
+        VISION_CACHE.delete(key);
+        return null;
+    }
+    return entry.value;
+};
+
+const setCachedVision = (imageUrl, vision) => {
+    const key = visionCacheKey(imageUrl);
+    if (!key || !vision?.primaryKeyword) return;
+    VISION_CACHE.set(key, { value: vision, ts: Date.now() });
+    while (VISION_CACHE.size > 40) {
+        const oldest = VISION_CACHE.keys().next().value;
+        VISION_CACHE.delete(oldest);
+    }
+};
+
 const resolveSmartImageSearch = async ({
     imageUrl,
     limit = 24,
@@ -278,13 +357,19 @@ const resolveSmartImageSearch = async ({
     fieldName,
     fieldValue,
     country = "en",
+    fast = isFastImageSearchEnabled(),
 } = {}) => {
     const pageLimit = Math.max(1, Math.min(Number(limit) || 24, 48));
+    const minCatalogHits = Math.min(3, pageLimit);
     let items = [];
     let smartListing = null;
-    let provider = "pipeline";
+    let provider = fast ? "ai-vision" : "pipeline";
 
-    const visionResult = await resolveVisionFromImage(imageUrl);
+    const visionResult = getCachedVision(imageUrl)
+        || await resolveVisionFromImage(imageUrl, { fast });
+    if (visionResult?.primaryKeyword) {
+        setCachedVision(imageUrl, visionResult);
+    }
     let vision = visionResult ? { ...visionResult } : null;
     if (visionResult?.smartListing) {
         smartListing = visionResult.smartListing;
@@ -300,29 +385,64 @@ const resolveSmartImageSearch = async ({
             fieldName,
             fieldValue,
             country,
+            fast,
         }));
     }
 
-    try {
-        const alibabaVisual = await runAlibabaImageSearch({
-            imageUrl,
-            pageLimit,
-            pageSkip: skip,
-            country,
+    if (fast && items.length) {
+        items.sort((a, b) => {
+            const scoreA = Number(a.match_score || a.similarity_score || 0);
+            const scoreB = Number(b.match_score || b.similarity_score || 0);
+            return scoreB - scoreA;
         });
-        if (alibabaVisual?.items?.length) {
-            mergeItems(items, alibabaVisual.items, { scoreBoost: 2 });
-            if (!vision?.primaryKeyword && alibabaVisual.vision) {
-                vision = { ...vision, ...alibabaVisual.vision };
+        items = items.slice(0, pageLimit);
+        return {
+            items,
+            recommendations: [],
+            smartListing,
+            vision,
+            provider: vision?.provider || provider,
+            total: items.length,
+        };
+    }
+
+    if (items.length < pageLimit && items.length < minCatalogHits && guessLocalImagePath(imageUrl)) {
+        try {
+            const localMatch = await runLocalVisualSearch({ imageAddress: imageUrl, pageLimit });
+            if (localMatch?.items?.length) {
+                mergeItems(items, localMatch.items, { scoreBoost: 3 });
+                if (!vision?.objectLabel && localMatch.vision) {
+                    vision = { ...(vision || {}), ...localMatch.vision };
+                }
+                provider = items.length ? `${provider}+local` : "local";
             }
-            provider = items.length ? `${provider}+alibaba` : "alibaba";
+        } catch (localErr) {
+            console.warn("[smart-image-search] Local visual match failed:", localErr.message);
+        }
+    }
+
+    try {
+        if (!guessLocalImagePath(imageUrl)) {
+            const alibabaVisual = await runAlibabaImageSearch({
+                imageUrl,
+                pageLimit,
+                pageSkip: skip,
+                country,
+            });
+            if (alibabaVisual?.items?.length) {
+                mergeItems(items, alibabaVisual.items, { scoreBoost: 2 });
+                if (!vision?.primaryKeyword && alibabaVisual.vision) {
+                    vision = { ...(vision || {}), ...alibabaVisual.vision };
+                }
+                provider = items.length ? `${provider}+alibaba` : "alibaba";
+            }
         }
     } catch (alibabaVisualErr) {
         console.warn("[smart-image-search] 1688 imageQuery failed:", alibabaVisualErr.message);
     }
 
     let pipelineTotal = 0;
-    if (items.length < pageLimit) {
+    if (items.length < pageLimit && items.length < minCatalogHits) {
         const pipeline = await runImageSearchPipeline({
             imageUrl,
             limit: pageLimit,
@@ -331,11 +451,13 @@ const resolveSmartImageSearch = async ({
             fieldName,
             fieldValue,
             country,
-            skipGoogle: true,
+            skipGoogle: isDashscopeConfigured(),
         });
 
         if (!vision?.primaryKeyword && pipeline.vision?.primaryKeyword) {
-            vision = pipeline.vision;
+            vision = { ...(vision || {}), ...pipeline.vision };
+        } else if (!vision?.objectLabel && pipeline.vision?.objectLabel) {
+            vision = { ...(vision || {}), ...pipeline.vision };
         }
 
         const before = items.length;
@@ -354,11 +476,18 @@ const resolveSmartImageSearch = async ({
     });
 
     items = items.slice(0, pageLimit);
-    const recommendations = await collectRecommendations(
-        items,
-        vision?.searchPhrase || vision?.primaryKeyword || "",
-        { limit: 12 }
-    );
+
+    if ((!vision?.primaryKeyword && !vision?.objectLabel) && items.length) {
+        vision = { ...(vision || {}), ...inferVisionFromItems(items) };
+    }
+
+    const recommendations = isDashscopeConfigured() && items.length < pageLimit
+        ? await collectRecommendations(
+            items,
+            vision?.searchPhrase || vision?.primaryKeyword || "",
+            { limit: Math.min(12, Math.max(4, pageLimit - items.length)) }
+        )
+        : [];
 
     return {
         items,
@@ -393,6 +522,7 @@ const resolveSearchRecommendations = async (searchQuery, mainItems = [], { limit
 
 module.exports = {
     isSmartImageSearchEnabled,
+    isFastImageSearchEnabled,
     resolveSmartImageSearch,
     resolveSearchRecommendations,
     searchSimilarByEmbedding,

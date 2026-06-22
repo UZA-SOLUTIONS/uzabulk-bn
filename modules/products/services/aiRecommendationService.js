@@ -130,6 +130,38 @@ const ensureRelatedProducts = async (productId, { limit = 8 } = {}) => {
 };
 
 /**
+ * Batch pre-compute related_products for catalog (nightly job).
+ */
+const backfillRelatedProducts = async ({ limit = 50 } = {}) => {
+    if (!isAutoRecommendationsEnabled() || !isDashscopeConfigured()) {
+        return { processed: 0, skipped: true };
+    }
+
+    const products = await Product.find({
+        status: "active",
+        embedding: { $exists: true, $type: "array", $ne: [] },
+    })
+        .select("_id")
+        .limit(Math.max(1, Math.min(limit, 200)))
+        .lean();
+
+    let processed = 0;
+    let errors = 0;
+
+    for (const product of products) {
+        try {
+            const relatedIds = await ensureRelatedProducts(product._id, { limit: 8 });
+            if (relatedIds.length) processed += 1;
+        } catch (error) {
+            errors += 1;
+            console.warn(`Related products backfill failed ${product._id}:`, error.message);
+        }
+    }
+
+    return { processed, errors, scanned: products.length };
+};
+
+/**
  * Cold-start recommendations from catalog embeddings (no user behavior yet).
  */
 const getEmbeddingDiscoveryProducts = async ({ limit = 24, seedKey = "" } = {}) => {
@@ -189,5 +221,6 @@ module.exports = {
     isAutoRecommendationsEnabled,
     applyEmbeddingBoost,
     ensureRelatedProducts,
+    backfillRelatedProducts,
     getEmbeddingDiscoveryProducts,
 };

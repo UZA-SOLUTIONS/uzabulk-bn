@@ -3,6 +3,7 @@ const esHelper = require("../esHelper");
 const {
     isElasticConfigured,
     isElasticsearchReachable,
+    getElasticsearchAvailability,
     logElasticsearchSearchError,
 } = require("../availability");
 const _ = require('lodash');
@@ -153,7 +154,7 @@ module.exports = {
 
     search: async (query = null, options = { limit: 10, skip: 0 }) => {
         if (!isElasticConfigured() || !isElasticsearchReachable()) {
-            throw new Error("Search failed");
+            return { items: [], total: 0, tookMs: 0, timedOut: false };
         }
 
         try {
@@ -182,7 +183,7 @@ module.exports = {
             };
         } catch (error) {
             logElasticsearchSearchError(error);
-            throw new Error("Search failed");
+            return { items: [], total: 0, tookMs: 0, timedOut: false };
         }
     },
 
@@ -190,6 +191,7 @@ module.exports = {
         try {
             if (!isElasticSearchConfigured()) return;
             if (!data?.length) return;
+            if (!(await getElasticsearchAvailability())) return;
 
             const writeIndex = String(options?.index || INDEX_ALIAS);
             const bulkOps = [];
@@ -222,9 +224,8 @@ module.exports = {
 
             const response = await esClient.bulk({ refresh: true, body: bulkOps });
 
-            console.log("Bulk insert end...");
         } catch (error) {
-            console.error('Bulk upsert error:', error);
+            logElasticsearchSearchError(error);
         }
     }
 }

@@ -7,6 +7,7 @@ const helper = require("../helper");
 const { getDate, paymentSlipUploadLink, verifyToken } = require('../../../utils');
 const { v4: uuidv4 } = require('uuid');
 const { trackProductBehavior } = require('../../products/services/recommendationService');
+const { getPersonalizedSurface } = require('../../recommendations/services/recommendationEngineService');
 const {
     relayOrderTo1688,
     sync1688OrderState,
@@ -168,6 +169,27 @@ module.exports = {
                     relay_eligible: Boolean(line.offerId && (line.items || []).every((i) => i.spec_id || i.sku_id || i.variation_id)),
                 })),
             };
+
+            if (String(process.env.RECOMMENDATION_ENGINE_ENABLED ?? "true").toLowerCase() !== "false") {
+                try {
+                    const cartProductIds = [];
+                    (checkout.line_items || []).forEach((line) => {
+                        (line.items || []).forEach((item) => {
+                            if (item?.product) cartProductIds.push(String(item.product));
+                        });
+                    });
+                    const crossSell = await getPersonalizedSurface("cross_sell", req, {
+                        cartProductIds,
+                        contextKey: cartProductIds.slice(0, 5).join(":") || "empty",
+                        limit: 4,
+                    });
+                    if (crossSell.items?.length) {
+                        checkout.cross_sell = crossSell.items;
+                    }
+                } catch (crossSellError) {
+                    console.warn("Checkout cross-sell failed:", crossSellError.message);
+                }
+            }
 
             return res.success(checkout);
 

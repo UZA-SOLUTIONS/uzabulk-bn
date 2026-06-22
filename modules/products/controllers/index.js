@@ -35,20 +35,6 @@ const { expandSearchQuery } = require('../../ai/services/aiTextSearchService');
 const { isElasticsearchReachable } = require('../../../elasticsearch/availability');
 
 const looksLikeObjectId = (value) => /^[a-fA-F0-9]{24}$/.test(String(value || "").trim());
-
-const withRequestTimeout = async (promise, timeoutMs, fallback) => {
-    let timer;
-    try {
-        return await Promise.race([
-            promise,
-            new Promise((resolve) => {
-                timer = setTimeout(() => resolve(fallback), timeoutMs);
-            }),
-        ]);
-    } finally {
-        if (timer) clearTimeout(timer);
-    }
-};
 const escapeRegex = (value = "") => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const normalizeSearchText = (value = "") => String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
 
@@ -769,6 +755,7 @@ module.exports = {
                     fieldName,
                     fieldValue,
                     country: imageCountry,
+                    fast: true,
                 });
 
                 const items = result.items || [];
@@ -812,19 +799,15 @@ module.exports = {
 
             try {
                 if (search) {
-                    const aiTextSearch = await withRequestTimeout(
-                        searchCatalogByText({
-                            search,
-                            limit,
-                            skip,
-                            category,
-                            fieldName,
-                            fieldValue,
-                            singleCategoryOnly: onlySingleCategory,
-                        }),
-                        12000,
-                        { items: [], total: 0, searchMeta: { engine: "mongo_fallback", searchQuery: search } }
-                    );
+                    const aiTextSearch = await searchCatalogByText({
+                        search,
+                        limit,
+                        skip,
+                        category,
+                        fieldName,
+                        fieldValue,
+                        singleCategoryOnly: onlySingleCategory,
+                    });
                     rawEsItems = aiTextSearch.items || [];
                     esTotalHits = aiTextSearch.total || 0;
                     aiSearchMeta = aiTextSearch.searchMeta || null;
@@ -1012,6 +995,20 @@ module.exports = {
             }
 
             const imageUrl = String(file.location).trim();
+            const prepareOnly =
+                req.query.prepare === "1"
+                || req.query.prepare === "true"
+                || req.query.prepareOnly === "1";
+
+            if (prepareOnly) {
+                return res.success(req.nextPageOptions([], 0, {
+                    imageSearch: true,
+                    imageSearchProvider: "upload",
+                    imageUrl,
+                    prepared: true,
+                }));
+            }
+
             const { limit, skip } = req.paginationOptions;
             const { category, fieldName, fieldValue, country } = req.query;
 
@@ -1023,6 +1020,7 @@ module.exports = {
                 fieldName,
                 fieldValue,
                 country,
+                fast: true,
             });
 
             const items = result.items || [];

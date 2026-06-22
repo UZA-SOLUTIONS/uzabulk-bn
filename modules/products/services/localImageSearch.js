@@ -2,6 +2,7 @@ const { execFile } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { guessLocalImagePath } = require("../../ai/helpers/resolveVisionImageInput");
 
 const LOCAL_IMAGE_SEARCH_ENABLED =
     Boolean(env?.localImageSearch?.ENABLED) ||
@@ -38,6 +39,14 @@ const execFileAsync = (bin, args, options = {}) =>
         });
     });
 
+const buildQueryArgs = (imageAddress = "") => {
+    const localPath = guessLocalImagePath(imageAddress);
+    if (localPath) {
+        return ["--query-file", localPath];
+    }
+    return ["--query-url", String(imageAddress || "").trim()];
+};
+
 const searchLocalImage = async ({ imageAddress, limit = 32 }) => {
     if (!LOCAL_IMAGE_SEARCH_ENABLED) return null;
     if (!imageAddress || typeof imageAddress !== "string") return null;
@@ -45,8 +54,7 @@ const searchLocalImage = async ({ imageAddress, limit = 32 }) => {
     const args = [
         LOCAL_IMAGE_SEARCH_SCRIPT,
         "search",
-        "--query-url",
-        imageAddress.trim(),
+        ...buildQueryArgs(imageAddress),
         "--top-k",
         String(Math.max(1, Number(limit) || 32)),
         "--index-path",
@@ -57,7 +65,7 @@ const searchLocalImage = async ({ imageAddress, limit = 32 }) => {
 
     try {
         const { stdout } = await execFileAsync(LOCAL_IMAGE_SEARCH_PYTHON_BIN, args, {
-            timeout: 90000,
+            timeout: 180000,
             windowsHide: true,
             maxBuffer: 8 * 1024 * 1024,
         });
@@ -103,15 +111,14 @@ const searchLocalImageLive = async ({ imageAddress, candidates = [], limit = 32 
         const args = [
             LOCAL_IMAGE_SEARCH_SCRIPT,
             "search-live",
-            "--query-url",
-            imageAddress.trim(),
+            ...buildQueryArgs(imageAddress),
             "--top-k",
             String(Math.max(1, Number(limit) || 32)),
             "--products-json",
             tempPath,
         ];
         const { stdout } = await execFileAsync(LOCAL_IMAGE_SEARCH_PYTHON_BIN, args, {
-            timeout: 90000,
+            timeout: 180000,
             windowsHide: true,
             maxBuffer: 8 * 1024 * 1024,
         });

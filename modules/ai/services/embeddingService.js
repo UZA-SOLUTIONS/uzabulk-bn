@@ -1,4 +1,5 @@
 const { getDashscopeClient, isDashscopeConfigured } = require("../dashscopeClient");
+const { buildAttributesEmbeddingText } = require("../helpers/productAttributes");
 
 const EMBEDDING_MODEL = () => env?.dashscope?.EMBEDDING_MODEL || "text-embedding-v3";
 const EMBEDDING_DIMENSIONS = () =>
@@ -28,11 +29,29 @@ const getEmbedding = async (text) => {
     return vector;
 };
 
+const getMetaValue = (product, key) => {
+    const row = (product.meta_data || []).find((m) => m?.key === key);
+    return row?.value != null ? String(row.value) : "";
+};
+
 const buildProductEmbeddingText = (product = {}) => {
+    let attributeText = "";
+    const rawAttrs = getMetaValue(product, "ai_attributes_json");
+    if (rawAttrs) {
+        try {
+            attributeText = buildAttributesEmbeddingText(JSON.parse(rawAttrs));
+        } catch {
+            attributeText = "";
+        }
+    }
+
+    const seoKeywords = product.seoSettings?.metaKeywords || "";
     const parts = [
         product.name,
         product.short_description,
         product.description,
+        attributeText,
+        seoKeywords,
         Array.isArray(product.categories) ? product.categories.join(" ") : "",
         product.pricingType,
     ].filter(Boolean);
@@ -60,6 +79,7 @@ const cosineSimilarity = (a, b) => {
 module.exports = {
     getEmbedding,
     buildProductEmbeddingText,
+    getMetaValue,
     cosineSimilarity,
     EMBEDDING_MODEL,
     EMBEDDING_DIMENSIONS,

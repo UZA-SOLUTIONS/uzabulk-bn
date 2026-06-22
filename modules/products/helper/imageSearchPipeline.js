@@ -8,6 +8,9 @@
 
 const { resolveImageSearchFromAi } = require("../../ai/services/aiImageSearchService");
 
+const fs = require("fs");
+const path = require("path");
+
 const { searchGoogleImageKeywords } = require("../services/googleImageSearch");
 
 const { searchLocalImage, searchLocalImageLive } = require("../services/localImageSearch");
@@ -316,6 +319,82 @@ const mergeCatalogAndStubs = async (offers = [], pageLimit = 32) => {
 
 
 
+const buildLocalVision = (matchedItems = []) => {
+    const topName = String(matchedItems[0]?.name || "").trim();
+    if (!topName || topName === "Product") return null;
+    const label = topName.split(/\s+/).slice(0, 5).join(" ");
+    return {
+        provider: "local-visual",
+        objectLabel: label,
+        primaryKeyword: label,
+        keywords: topName.split(/\s+/).filter((word) => word.length > 2).slice(0, 6),
+        searchPhrase: topName,
+    };
+};
+
+const runLocalVisualSearch = async ({ imageAddress, pageLimit = 32 } = {}) => {
+    const imageUrl = String(imageAddress || "").trim();
+    if (!imageUrl) return null;
+
+    try {
+        const indexPath = process.env.LOCAL_IMAGE_SEARCH_INDEX
+            || path.resolve(process.cwd(), "data", "image-search", "products.index.faiss");
+        if (fs.existsSync(indexPath)) {
+            const localImageSearch = await searchLocalImage({ imageAddress: imageUrl, limit: pageLimit });
+            if (localImageSearch?.offerIds?.length) {
+                const items = (await mapProductsByOfferOrder(localImageSearch.offerIds)).slice(0, pageLimit);
+                if (items.length) {
+                    return {
+                        items,
+                        provider: "local",
+                        vision: buildLocalVision(items),
+                        total: items.length,
+                    };
+                }
+            }
+        }
+    } catch (localErr) {
+        console.warn("[image-search] Local index failed:", localErr?.message || localErr);
+    }
+
+    try {
+        const liveCandidates = await _model.Product.find({ status: "active" })
+            .select("offerId name featured_image")
+            .populate({ path: "featured_image", select: "link -_id" })
+            .sort({ date_created_utc: -1 })
+            .limit(8)
+            .lean();
+
+        const localLive = await searchLocalImageLive({
+            imageAddress: imageUrl,
+            limit: pageLimit,
+            candidates: liveCandidates.map((p) => ({
+                offerId: p?.offerId,
+                name: p?.name,
+                imageUrl: typeof p?.featured_image === "string" ? p.featured_image : p?.featured_image?.link,
+            })),
+        });
+
+        if (localLive?.offerIds?.length) {
+            const items = (await mapProductsByOfferOrder(localLive.offerIds)).slice(0, pageLimit);
+            if (items.length) {
+                return {
+                    items,
+                    provider: "local",
+                    vision: buildLocalVision(items),
+                    total: items.length,
+                };
+            }
+        }
+    } catch (liveErr) {
+        console.warn("[image-search] Local live failed:", liveErr?.message || liveErr);
+    }
+
+    return null;
+};
+
+
+
 const runAlibabaImageSearch = async ({
 
     imageUrl,
@@ -376,6 +455,14 @@ const runAlibabaImageSearch = async ({
 
     ) || items.length;
 
+    const topSubject = String(
+        offers[0]?.subjectTrans || offers[0]?.subject || offers[0]?.title || items[0]?.name || ""
+    ).trim();
+    const keywords = offers
+        .slice(0, 5)
+        .map((row) => String(row?.subjectTrans || row?.subject || "").trim())
+        .filter(Boolean);
+
 
 
     return {
@@ -384,17 +471,19 @@ const runAlibabaImageSearch = async ({
 
         provider: "alibaba",
 
-        vision: {
+        vision: topSubject ? {
 
             provider: "alibaba-image-search",
 
-            primaryKeyword: "",
+            objectLabel: topSubject,
 
-            keywords: [],
+            primaryKeyword: topSubject,
 
-            searchPhrase: "",
+            keywords,
 
-        },
+            searchPhrase: topSubject,
+
+        } : null,
 
         total: totalRecords,
 
@@ -446,7 +535,22 @@ const runImageSearchPipeline = async ({
 
 
 
-    // 1. 1688 cross-border image search (upload local file → imageId → imageQuery)
+    if (guessLocalImagePath(imageAddress)) {
+        try {
+            const localMatch = await runLocalVisualSearch({ imageAddress, pageLimit });
+            if (localMatch?.items?.length) {
+                return localMatch;
+            }
+        } catch (localEarlyErr) {
+            console.warn("[image-search] Local upload visual match failed:", localEarlyErr?.message || localEarlyErr);
+        }
+    }
+
+
+
+    // 1. 1688 cross-border image search (remote/public images only)
+
+    if (!guessLocalImagePath(imageAddress)) {
 
     try {
 
@@ -471,6 +575,8 @@ const runImageSearchPipeline = async ({
     } catch (alibabaErr) {
 
         console.warn("[image-search] 1688 imageQuery failed:", alibabaErr?.message || alibabaErr);
+
+    }
 
     }
 
@@ -642,88 +748,13 @@ const runImageSearchPipeline = async ({
 
 
 
-    // 4. Local FAISS index
+    // 4. Local FAISS / live match for remote image URLs
 
-    const hasLocalUpload = Boolean(guessLocalImagePath(imageAddress));
-
-    if (!hasLocalUpload) {
-
-        try {
-
-            const localImageSearch = await searchLocalImage({ imageAddress, limit: pageLimit });
-
-            if (localImageSearch?.offerIds?.length) {
-
-                const items = (await mapProductsByOfferOrder(localImageSearch.offerIds)).slice(0, pageLimit);
-
-                if (items.length) {
-
-                    return { items, provider: "local", vision: null, total: items.length };
-
-                }
-
-            }
-
-        } catch (localErr) {
-
-            console.warn("[image-search] Local index failed:", localErr?.message || localErr);
-
+    if (!guessLocalImagePath(imageAddress)) {
+        const localMatch = await runLocalVisualSearch({ imageAddress, pageLimit });
+        if (localMatch?.items?.length) {
+            return localMatch;
         }
-
-
-
-        // 5. Live local CLIP match
-
-        try {
-
-            const liveCandidates = await _model.Product.find({ status: "active" })
-
-                .select("offerId name featured_image")
-
-                .populate({ path: "featured_image", select: "link -_id" })
-
-                .sort({ date_created_utc: -1 })
-
-                .limit(120)
-
-                .lean();
-
-            const localLive = await searchLocalImageLive({
-
-                imageAddress,
-
-                limit: pageLimit,
-
-                candidates: liveCandidates.map((p) => ({
-
-                    offerId: p?.offerId,
-
-                    name: p?.name,
-
-                    imageUrl: typeof p?.featured_image === "string" ? p.featured_image : p?.featured_image?.link,
-
-                })),
-
-            });
-
-            if (localLive?.offerIds?.length) {
-
-                const items = (await mapProductsByOfferOrder(localLive.offerIds)).slice(0, pageLimit);
-
-                if (items.length) {
-
-                    return { items, provider: "local", vision: null, total: items.length };
-
-                }
-
-            }
-
-        } catch (liveErr) {
-
-            console.warn("[image-search] Local live failed:", liveErr?.message || liveErr);
-
-        }
-
     }
 
 
@@ -762,6 +793,7 @@ const searchAlibabaCatalogByKeywords = async ({
 module.exports = {
     runImageSearchPipeline,
     runAlibabaImageSearch,
+    runLocalVisualSearch,
     searchAlibabaCatalogByKeywords,
     resolveActiveCatalogItems,
     mapProductsByOfferOrder,

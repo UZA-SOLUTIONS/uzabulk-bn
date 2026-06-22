@@ -3,8 +3,11 @@ const { isDashscopeConfigured } = require("../dashscopeClient");
 const { resolveProductImageUrl } = require("../helpers/resolveProductImageUrl");
 const { analyzeProductImage, generateListing } = require("./smartListingService");
 const { ensureProductEmbedding } = require("../../products/services/similarProductsService");
+const { queueWanImageEnhancement } = require("./wanImageEnhanceService");
+const { TARGET_MARKETS_DEFAULT } = require("../helpers/productAttributes");
 
 const META_ENRICHED_AT = "ai_smart_listing_at";
+const META_SOURCE_SUBJECT_CN = "source_subject_cn";
 
 const isAutoSmartListingEnabled = () => {
     if (!isDashscopeConfigured()) return false;
@@ -34,12 +37,28 @@ const needsSmartListingEnrichment = (product = {}) => {
     return true;
 };
 
+const buildSkuProps = (product = {}) => {
+    const raw = product.featureAttribute || product.attributes;
+    if (!Array.isArray(raw)) return "";
+
+    return raw
+        .slice(0, 12)
+        .map((row) => {
+            const name = row?.attributeNameTrans || row?.attributeName || row?.name || "";
+            const value = row?.valueTrans || row?.value || row?.valueName || "";
+            if (!name && !value) return "";
+            return name ? `${name}: ${value}` : value;
+        })
+        .filter(Boolean)
+        .join("; ");
+};
+
 const buildListingUpdates = (product, listing = {}, attributes = {}) => {
     const titleEn = String(listing.title_en || "").trim();
     const descEn = String(listing.description_en || "").trim();
     const shortEn = descEn ? descEn.slice(0, 240) : "";
     const tags = Array.isArray(listing.seo_tags)
-        ? listing.seo_tags.map((t) => String(t).trim()).filter(Boolean)
+        ? listing.seo_tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 8)
         : [];
 
     const updates = {
@@ -93,8 +112,9 @@ const autoEnrichProductListing = async (productId, { force = false } = {}) => {
     }
 
     const product = await Product.findById(productId)
-        .select("name short_description description price featured_image images meta_data seoSettings min_order_qty status offerId")
+        .select("name short_description description price featured_image images meta_data seoSettings min_order_qty status offerId featureAttribute attributes topCategoryId")
         .populate({ path: "featured_image", select: "link -_id" })
+        .populate({ path: "topCategoryId", select: "name" })
         .lean();
 
     if (!product || product.status !== "active") {
@@ -110,11 +130,28 @@ const autoEnrichProductListing = async (productId, { force = false } = {}) => {
     }
 
     const sourcePriceCNY = product.price != null ? Number(product.price) : null;
-    const attributes = await analyzeProductImage(imageUrl);
-    const listing = await generateListing(attributes, sourcePriceCNY);
+    const subjectCn = getMetaValue(product, META_SOURCE_SUBJECT_CN) || product.name || "";
+    const categoryMapped = product.topCategoryId?.name || "";
+    const skuProps = buildSkuProps(product);
+
+    const attributes = await analyzeProductImage(imageUrl, {
+        targetMarket: TARGET_MARKETS_DEFAULT,
+    });
+    const listing = await generateListing(attributes, {
+        subjectCn,
+        categoryMapped,
+        sourcePriceCNY,
+        minOrderQty: product.min_order_qty,
+        skuProps,
+        targetMarkets: TARGET_MARKETS_DEFAULT,
+    });
     const updates = buildListingUpdates(product, listing, attributes);
 
     await Product.updateOne({ _id: productId }, { $set: updates });
+
+    queueWanImageEnhancement(productId, imageUrl).catch((err) => {
+        console.warn(`WAN enhance queue failed ${productId}:`, err?.message);
+    });
 
     ensureProductEmbedding(productId, { force: true }).catch((err) => {
         console.warn(`Embedding refresh after smart listing failed ${productId}:`, err?.message);
@@ -177,4 +214,5 @@ module.exports = {
     autoEnrichProductListing,
     backfillAutoSmartListing,
     META_ENRICHED_AT,
+    META_SOURCE_SUBJECT_CN,
 };

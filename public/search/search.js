@@ -13,6 +13,10 @@
   const resultsSection = $("#resultsSection");
   const recommendationsEl = $("#recommendations");
   const recommendationsSection = $("#recommendationsSection");
+  const moreLikeThisEl = $("#moreLikeThis");
+  const moreLikeThisSection = $("#moreLikeThisSection");
+  const moreLikeThisTitle = $("#moreLikeThisTitle");
+  const moreLikeThisSubtitle = $("#moreLikeThisSubtitle");
   const loadingEl = $("#loading");
   const loadingText = $("#loadingText");
   const emptyState = $("#emptyState");
@@ -122,12 +126,14 @@
     items.forEach((item) => renderProductCard(item, symbol, container));
   }
 
-  function renderSearchResults(items, recommendations) {
+  function renderSearchResults(items, moreLikeThis, recommendations, moreLikeThisSource) {
     resultsEl.innerHTML = "";
+    moreLikeThisEl.innerHTML = "";
     recommendationsEl.innerHTML = "";
 
-    if (!items?.length && !recommendations?.length) {
+    if (!items?.length && !moreLikeThis?.length && !recommendations?.length) {
       resultsSection.classList.add("hidden");
+      moreLikeThisSection.classList.add("hidden");
       recommendationsSection.classList.add("hidden");
       emptyState.textContent = "No products found. Try different keywords or another image.";
       emptyState.classList.remove("hidden");
@@ -141,6 +147,20 @@
       resultsSection.classList.remove("hidden");
     } else {
       resultsSection.classList.add("hidden");
+    }
+
+    if (moreLikeThis?.length) {
+      if (moreLikeThisSource?.name) {
+        moreLikeThisTitle.textContent = `More like "${moreLikeThisSource.name}"`;
+        moreLikeThisSubtitle.textContent = "Find similar wholesale items from your best match";
+      } else {
+        moreLikeThisTitle.textContent = "More like this";
+        moreLikeThisSubtitle.textContent = "Similar items from your top match";
+      }
+      renderProducts(moreLikeThis, moreLikeThisEl);
+      moreLikeThisSection.classList.remove("hidden");
+    } else {
+      moreLikeThisSection.classList.add("hidden");
     }
 
     if (recommendations?.length) {
@@ -181,25 +201,46 @@
     const data = json.data || {};
     const items = data.items || [];
     const others = data.others || {};
+    const moreLikeThis = others.moreLikeThis || [];
     const recommendations = others.recommendations || [];
 
     if (others.aiSearch || others.smartRecommendations) {
       showMeta(`<strong>AI search</strong> — smart recommendations included`);
     }
-    renderSearchResults(items, recommendations);
+    renderSearchResults(items, moreLikeThis, recommendations, others.moreLikeThisSource);
   }
 
   async function searchByImage(file) {
-    showLoading("Smart Listing AI is analyzing your image…");
+    showLoading("Uploading image for search…");
     hideMeta();
     hideSmartListing();
+
     const formData = new FormData();
     formData.append("file", file);
 
-    const res = await fetch(`${API_BASE}/products/ai/image-search?limit=24&skip=1`, {
+    const uploadRes = await fetch(`${API_BASE}/products/ai/image-search?prepare=1`, {
       method: "POST",
       headers: getAuthHeaders(),
       body: formData,
+    });
+    const uploadJson = await uploadRes.json();
+    if (uploadJson.status !== "success") {
+      hideLoading();
+      showError(uploadJson.message || "Image upload failed.");
+      return;
+    }
+
+    const imageUrl = uploadJson.data?.others?.imageUrl || "";
+    if (!imageUrl) {
+      hideLoading();
+      showError("Image upload did not return a URL.");
+      return;
+    }
+
+    showLoading("Smart Listing AI is analyzing your image…");
+    const params = new URLSearchParams({ image: imageUrl, limit: "24", skip: "1" });
+    const res = await fetch(`${API_BASE}/products/list?${params}`, {
+      headers: getAuthHeaders(),
     });
     const json = await res.json();
     hideLoading();
@@ -212,13 +253,14 @@
     const data = json.data || {};
     const items = data.items || [];
     const others = data.others || {};
+    const moreLikeThis = others.moreLikeThis || [];
     const recommendations = others.recommendations || [];
 
     const provider = others.imageSearchProvider || "ai";
     const keyword = others.imageSearchKeyword || others.imageSearchPhrase || "";
     const keywords = (others.imageSearchKeywords || []).slice(0, 5).join(", ");
 
-    let meta = `<strong>Smart image search</strong> via ${escapeHtml(provider)}`;
+    let meta = `<strong>Search bar image search</strong> via ${escapeHtml(provider)}`;
     if (keyword) meta += ` — detected: <em>${escapeHtml(keyword)}</em>`;
     if (keywords) meta += ` (${escapeHtml(keywords)})`;
     if (others.smartListing) meta += ` · <strong>Smart Listing</strong> applied`;
@@ -228,7 +270,7 @@
       showSmartListing(others.smartListing, others.smartListingAttributes);
     }
 
-    renderSearchResults(items, recommendations);
+    renderSearchResults(items, moreLikeThis, recommendations, others.moreLikeThisSource);
   }
 
   function setImagePreview(file) {

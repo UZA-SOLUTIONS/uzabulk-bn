@@ -55,7 +55,15 @@ def build_index(products_json: str, index_path: str, meta_path: str):
     print(json.dumps({"status": "ok", "count": len(meta), "indexPath": index_path, "metaPath": meta_path}))
 
 
-def search_index(query_url: str, top_k: int, index_path: str, meta_path: str):
+def resolve_query_hash(query_url: str = "", query_file: str = ""):
+    if query_file:
+        return image_hash_from_path(query_file)
+    if query_url:
+        return image_hash_from_url(query_url)
+    raise ValueError("query_url or query_file is required")
+
+
+def search_index(query_url: str, top_k: int, index_path: str, meta_path: str, query_file: str = ""):
     if not os.path.exists(index_path):
         print(json.dumps({"status": "error", "message": "Index or meta not found", "results": []}))
         return
@@ -63,7 +71,7 @@ def search_index(query_url: str, top_k: int, index_path: str, meta_path: str):
     with open(index_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
 
-    query_hash = image_hash_from_url(query_url)
+    query_hash = resolve_query_hash(query_url=query_url, query_file=query_file)
 
     scored = []
     for item in meta:
@@ -87,7 +95,7 @@ def search_index(query_url: str, top_k: int, index_path: str, meta_path: str):
     results = scored[: max(1, top_k)]
     print(json.dumps({"status": "ok", "count": len(results), "results": results}))
 
-def search_live(query_url: str, top_k: int, products_json: str):
+def search_live(query_url: str, top_k: int, products_json: str, query_file: str = ""):
     if not os.path.exists(products_json):
         print(json.dumps({"status": "error", "message": "products_json not found", "results": []}))
         return
@@ -95,7 +103,7 @@ def search_live(query_url: str, top_k: int, products_json: str):
     with open(products_json, "r", encoding="utf-8") as f:
         products = json.load(f)
 
-    query_hash = image_hash_from_url(query_url)
+    query_hash = resolve_query_hash(query_url=query_url, query_file=query_file)
     scored = []
     for product in products:
         offer_id = str(product.get("offerId", "")).strip()
@@ -130,13 +138,15 @@ def main():
     b.add_argument("--meta-path", required=True)
 
     s = sub.add_parser("search")
-    s.add_argument("--query-url", required=True)
+    s.add_argument("--query-url", default="")
+    s.add_argument("--query-file", default="")
     s.add_argument("--top-k", type=int, default=32)
     s.add_argument("--index-path", required=True)
     s.add_argument("--meta-path", required=True)
 
     l = sub.add_parser("search-live")
-    l.add_argument("--query-url", required=True)
+    l.add_argument("--query-url", default="")
+    l.add_argument("--query-file", default="")
     l.add_argument("--top-k", type=int, default=32)
     l.add_argument("--products-json", required=True)
 
@@ -144,9 +154,9 @@ def main():
     if args.mode == "build":
         build_index(args.products_json, args.index_path, args.meta_path)
     elif args.mode == "search":
-        search_index(args.query_url, args.top_k, args.index_path, args.meta_path)
+        search_index(args.query_url, args.top_k, args.index_path, args.meta_path, args.query_file)
     else:
-        search_live(args.query_url, args.top_k, args.products_json)
+        search_live(args.query_url, args.top_k, args.products_json, args.query_file)
 
 
 if __name__ == "__main__":

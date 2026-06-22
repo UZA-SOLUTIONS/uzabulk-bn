@@ -20,7 +20,7 @@ const updateProductDetails = async (product, productDetails) => {
 
         if (productDetails && productDetails.status == "published") {
 
-            const { topCategoryId = "", secondCategoryId, thirdCategoryId, status, productSkuInfos, subjectTrans, offerId, description, productSaleInfo, productImage, soldOut, productAttribute, mainVideo, detailVideo, productShippingInfo } = productDetails;
+            const { topCategoryId = "", secondCategoryId, thirdCategoryId, status, productSkuInfos, subject, subjectTrans, offerId, description, productSaleInfo, productImage, soldOut, productAttribute, mainVideo, detailVideo, productShippingInfo } = productDetails;
             const price_tiers = transformPriceRange(productSaleInfo?.priceRangeList || []);
             const min_order_qty = extractMinOrderQty(productDetails);
             const supplierIds = extractSupplierIds(productDetails);
@@ -85,7 +85,14 @@ const updateProductDetails = async (product, productDetails) => {
                 seller_id: supplierIds.seller_id,
                 supplier_id: supplierIds.supplier_id,
                 productShippingInfo,
-                last_updated: new Date()
+                last_updated: new Date(),
+                meta_data: [
+                    ...(product.meta_data || []).filter((row) => row?.key !== "source_subject_cn"),
+                    ...((subject || subjectTrans) ? [{
+                        key: "source_subject_cn",
+                        value: String(subject || subjectTrans),
+                    }] : []),
+                ],
             };
 
         } else productObject = { deleted_at: new Date(), status: "active", last_updated: new Date() };

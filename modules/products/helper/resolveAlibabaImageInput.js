@@ -78,13 +78,13 @@ const resolveAlibabaImageSearchInput = async (imageAddress) => {
         }
 
         const imageBase64 = await compressImageBase64(localPath);
-        const imageId = await uploadProductImage({ imageBase64 });
-        if (imageId && String(imageId) !== "0") {
-            return { imageId: String(imageId) };
-        }
-
         if (imageBase64.length <= 120_000) {
             return { imageBase64 };
+        }
+
+        const imageId = await uploadProductImage({ imageBase64 });
+        if (imageId) {
+            return { imageId: String(imageId) };
         }
 
         return null;

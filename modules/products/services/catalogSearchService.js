@@ -1,8 +1,7 @@
 const Product = require("../../../models/productsTable");
 const esProductService = require("./esProductService");
-const { expandSearchQuery, normalizeTerm } = require("../../ai/services/aiTextSearchService");
+const { expandSearchQuery, basicQueryCleanup, normalizeTerm } = require("../../ai/services/aiTextSearchService");
 const { getElasticsearchAvailability } = require("../../../elasticsearch/availability");
-const { searchAlibabaCatalogByKeywords } = require("../helper/imageSearchPipeline");
 
 const SEARCH_TIMEOUT_MS = Math.min(
     Math.max(Number(process.env.SEARCH_SOURCE_TIMEOUT_MS || 8000), 3000),
@@ -11,6 +10,10 @@ const SEARCH_TIMEOUT_MS = Math.min(
 const MONGO_SEARCH_TIMEOUT_MS = Math.min(
     Math.max(Number(process.env.SEARCH_MONGO_TIMEOUT_MS || 2500), 1500),
     6000
+);
+const IMAGE_SEARCH_BATCH_LIMIT = Math.min(
+    Math.max(Number(process.env.IMAGE_SEARCH_BATCH_LIMIT || 100), 60),
+    160
 );
 const CATALOG_BATCH_LIMIT = Math.min(
     Math.max(Number(process.env.SEARCH_CATALOG_BATCH_LIMIT || 400), 120),
@@ -203,7 +206,6 @@ const queryMongoByNameNeedle = async (needle, { limit = 32, category } = {}) => 
         .select(listProjection)
         .sort({ average_rating: -1, rating_count: -1, sold_count: -1, _id: -1 })
         .limit(limit)
-        .maxTimeMS(MONGO_SEARCH_TIMEOUT_MS)
         .lean();
 };
 
@@ -222,7 +224,6 @@ const queryMongoByText = async (needle, { limit = 32, category } = {}) => {
             .select(listProjection)
             .sort({ score: { $meta: "textScore" } })
             .limit(limit)
-            .maxTimeMS(MONGO_SEARCH_TIMEOUT_MS)
             .lean();
     } catch {
         return [];
@@ -250,9 +251,9 @@ const matchesAnyVariant = (item, variants = []) => {
     return variants.some((variant) => variant && variantMatchesHaystack(haystack, variant));
 };
 
-const safeQuery = async (promise, timeoutMs) => {
+const safeQuery = async (promise) => {
     try {
-        return await withTimeout(promise, timeoutMs, []);
+        return await promise;
     } catch (error) {
         console.warn("Catalog query failed:", error?.message || error);
         return [];
@@ -269,9 +270,7 @@ const loadCatalogBatch = async (category, { sort, batchLimit } = {}) => {
             .select(listProjection)
             .sort(sort)
             .limit(batchLimit)
-            .maxTimeMS(4000)
-            .lean(),
-        4500
+            .lean()
     );
 };
 
@@ -305,11 +304,11 @@ const searchMongoCatalog = async (raw, terms, { limit = 32, category } = {}) => 
     const textNeedles = buildTextSearchNeedles(raw, terms, variants);
     const remoteQueries = [
         ...textNeedles.map((needle) =>
-            safeQuery(queryMongoByText(needle, { limit, category }), MONGO_SEARCH_TIMEOUT_MS + 500)
+            safeQuery(queryMongoByText(needle, { limit, category }))
         ),
         ...(REMOTE_MONGO_SEARCH
             ? variants.slice(0, 2).map((variant) =>
-                  safeQuery(queryMongoByNameNeedle(variant, { limit, category }), MONGO_SEARCH_TIMEOUT_MS)
+                  safeQuery(queryMongoByNameNeedle(variant, { limit, category }))
               )
             : []),
     ];
@@ -340,14 +339,14 @@ const searchAlibabaFallback = async ({ terms, variants, limit, skip }) => {
     const primaryKeyword = terms.primary || terms.correctedQuery || terms.original || "";
     if (!primaryKeyword) return [];
 
+    const { searchAlibabaCatalogByKeywords } = require("../helper/imageSearchPipeline");
     return safeQuery(
         searchAlibabaCatalogByKeywords({
             primaryKeyword,
             keywords: variants,
             pageLimit: limit,
             pageSkip: Math.max(1, Number(skip) || 1),
-        }),
-        ALIBABA_SEARCH_TIMEOUT_MS
+        })
     );
 };
 
@@ -388,11 +387,7 @@ const searchElasticsearchCatalog = async ({
     for (const variant of variants.slice(0, 4)) {
         if (merged.length >= limit) break;
         const payload = unwrapEsSearchResult(
-            await withTimeout(
-                esProductService.list({ ...baseQuery, search: variant }),
-                SEARCH_TIMEOUT_MS,
-                { items: [], total: 0 }
-            )
+            await esProductService.list({ ...baseQuery, search: variant })
         );
         if (!primaryPayload.items.length) primaryPayload = payload;
         payload.items.forEach((item) => {
@@ -419,6 +414,7 @@ const searchCatalogByText = async ({
     fieldValue,
     singleCategoryOnly = false,
     fast = false,
+    skipExternal = false,
 } = {}) => {
     const raw = String(search || "").trim();
     if (!raw) {
@@ -468,7 +464,7 @@ const searchCatalogByText = async ({
         else if (mongoItems.length && engine === "elasticsearch") engine = "elasticsearch+mongo";
     }
 
-    if (merged.length < 3) {
+    if (!skipExternal && merged.length < 3) {
         const alibabaItems = await searchAlibabaFallback({ terms, variants, limit, skip });
         if (alibabaItems.length) {
             const seen = new Set(merged.map(itemKey));
@@ -506,8 +502,89 @@ const searchCatalogByText = async ({
     };
 };
 
+/**
+ * Lightweight catalog lookup for image search — skips ES and large batch scans.
+ */
+const searchCatalogForImage = async ({ search = "", limit = 32, category } = {}) => {
+    const raw = String(search || "").trim();
+    if (!raw) return { items: [], total: 0 };
+
+    const cap = Math.max(1, Math.min(Number(limit) || 32, 48));
+    const merged = [];
+    const seen = new Set();
+    const ingest = (items = []) => {
+        items.forEach((item) => {
+            const key = itemKey(item);
+            if (!key || seen.has(key)) return;
+            seen.add(key);
+            merged.push(item);
+        });
+    };
+
+    const needles = [];
+    const needleSeen = new Set();
+    const addNeedle = (value) => {
+        const term = normalizeTerm(value);
+        if (!term || term.length < 2 || needleSeen.has(term)) return;
+        needleSeen.add(term);
+        needles.push(term);
+    };
+    const words = raw.toLowerCase().split(/\s+/).filter((token) => token.length >= 2);
+    if (words.length >= 2) addNeedle(words.slice(-2).join(" "));
+    addNeedle(raw);
+
+    for (const needle of needles.slice(0, 2)) {
+        if (merged.length >= cap) break;
+
+        try {
+            ingest(await queryMongoByText(needle, { limit: cap, category }));
+        } catch (error) {
+            console.warn("Image catalog text query failed:", error?.message || error);
+        }
+
+        if (merged.length < 3) {
+            try {
+                ingest(await queryMongoByNameNeedle(needle, { limit: cap, category }));
+            } catch (error) {
+                console.warn("Image catalog name query failed:", error?.message || error);
+            }
+        }
+    }
+
+    if (merged.length < 3) {
+        const terms = basicQueryCleanup(raw);
+        const variants = buildSearchVariants(raw, terms);
+        try {
+            const batch = await Product.find({
+                status: "active",
+                ...buildMongoCategoryFilter(category),
+            })
+                .select(listProjection)
+                .sort({ date_created_utc: -1, _id: -1 })
+                .limit(IMAGE_SEARCH_BATCH_LIMIT)
+                .lean();
+            ingest(
+                rankSearchResults(
+                    batch.filter((item) => matchesAnyVariant(item, variants)),
+                    terms,
+                    variants
+                )
+            );
+        } catch (error) {
+            console.warn("Image catalog batch query failed:", error?.message || error);
+        }
+    }
+
+    const items = merged.slice(0, cap).map(sanitizeSearchItem);
+    if (items.length) {
+        await Product.populate(items, { path: "featured_image", select: "link -_id" });
+    }
+    return { items, total: items.length };
+};
+
 module.exports = {
     searchCatalogByText,
+    searchCatalogForImage,
     buildSearchVariants,
     rankSearchResults,
     sanitizeSearchItem,
