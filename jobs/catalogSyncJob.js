@@ -1,6 +1,7 @@
 const Product = require("../models/productsTable");
 const { getProductDetail } = require("../modules/products/services/alibaba");
 const { updateProductDetails } = require("../modules/products/helper/migration");
+const { isImageSearchBusy } = require("../utils/imageSearchGate");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ENABLED = String(process.env.ALIBABA_CATALOG_SYNC_JOB_ENABLED || "true").toLowerCase() !== "false";
@@ -14,6 +15,11 @@ let running = false;
 const runCatalogSyncJob = async () => {
     if (running) {
         console.log("[1688-catalog-sync] Skipped — previous run still active");
+        return;
+    }
+
+    if (isImageSearchBusy()) {
+        console.log("[1688-catalog-sync] Skipped — image search in progress");
         return;
     }
 
@@ -36,6 +42,10 @@ const runCatalogSyncJob = async () => {
 
         let synced = 0;
         for (const product of products) {
+            if (isImageSearchBusy()) {
+                console.log("[1688-catalog-sync] Paused — image search in progress");
+                break;
+            }
             try {
                 const details = await getProductDetail(product.offerId);
                 if (details) {

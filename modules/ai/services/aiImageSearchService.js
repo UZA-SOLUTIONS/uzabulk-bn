@@ -12,9 +12,13 @@ const getSearchCatalogByText = () =>
 const getSearchCatalogForImage = () =>
     require("../../products/services/catalogSearchService").searchCatalogForImage;
 
+const getBuildImageSearchCatalogNeedles = () =>
+    require("../../products/services/catalogSearchService").buildImageSearchCatalogNeedles;
+
 const isAiImageSearchEnabled = () => {
     if (!isDashscopeConfigured()) return false;
-    const flag = String(env?.dashscope?.AI_IMAGE_SEARCH ?? env?.dashscope?.AI_SEARCH ?? "true").toLowerCase();
+    const dashscope = (typeof env !== "undefined" ? env : global.env || {})?.dashscope || {};
+    const flag = String(dashscope.AI_IMAGE_SEARCH ?? dashscope.AI_SEARCH ?? "true").toLowerCase();
     return flag !== "0" && flag !== "false";
 };
 
@@ -83,7 +87,10 @@ const extractImageSearchKeywords = async (imageAddress) => {
     appendKeyword(keywords, seen, parsed?.material);
     (Array.isArray(parsed?.keywords) ? parsed.keywords : []).forEach((k) => appendKeyword(keywords, seen, k));
 
-    const primaryKeyword = keywords[0] || normalizeKeyword(parsed?.search_phrase);
+    const primaryKeyword = normalizeKeyword(parsed?.primaryKeyword)
+        || normalizeKeyword(parsed?.object_label)
+        || normalizeKeyword(parsed?.search_phrase)
+        || keywords[0];
     if (!primaryKeyword) return null;
 
     return {
@@ -111,19 +118,9 @@ const searchCatalogByKeywords = async ({
     fieldName,
     fieldValue,
     fast = false,
+    vision = null,
 } = {}) => {
     const cap = Math.max(1, Math.min(Number(limit) || 32, 100));
-    const merged = [];
-    const seen = new Set();
-
-    const ingest = (items = []) => {
-        items.forEach((item) => {
-            const key = String(item?._id || item?.offerId || "");
-            if (!key || seen.has(key)) return;
-            seen.add(key);
-            merged.push(item);
-        });
-    };
 
     const uniqueKeywords = [...new Set(
         [primaryKeyword, ...(Array.isArray(keywords) ? keywords : [])]
@@ -131,59 +128,30 @@ const searchCatalogByKeywords = async ({
             .filter((term) => term.length >= 2)
     )];
 
-    const buildNeedles = () => {
-        const needles = [];
-        const seenNeedles = new Set();
-        const add = (value) => {
-            const term = String(value || "").trim();
-            if (!term || term.length < 2 || seenNeedles.has(term.toLowerCase())) return;
-            seenNeedles.add(term.toLowerCase());
-            needles.push(term);
-        };
+    const catalogNeedles = getBuildImageSearchCatalogNeedles()({
+        primaryKeyword,
+        searchPhrase: vision?.searchPhrase || "",
+        objectLabel: vision?.objectLabel || "",
+        keywords: uniqueKeywords,
+    });
 
-        uniqueKeywords.forEach((term) => {
-            const words = term.toLowerCase().split(/\s+/).filter((token) => token.length >= 2);
-            if (words.length >= 2) {
-                add(words.slice(-2).join(" "));
-            }
+    if (!catalogNeedles.length && !primaryKeyword) return [];
+
+    try {
+        const result = await getSearchCatalogForImage()({
+            search: primaryKeyword,
+            limit: cap,
+            skip,
+            category,
+            fieldName,
+            fieldValue,
+            vision,
         });
-
-        uniqueKeywords.forEach((term) => add(term));
-
-        return needles.slice(0, 5);
-    };
-
-    const runCatalogSearch = async (search) => {
-        if (!search || merged.length >= cap) return;
-        try {
-            const result = fast
-                ? await getSearchCatalogForImage()({ search, limit: cap, category })
-                : await getSearchCatalogByText()({
-                    search,
-                    limit: cap,
-                    skip,
-                    category,
-                    fieldName,
-                    fieldValue,
-                    fast: true,
-                    skipExternal: true,
-                });
-            ingest(result?.items || []);
-        } catch (error) {
-            console.warn(`Image keyword search failed for "${search}":`, error?.message || error);
-        }
-    };
-
-    const needles = buildNeedles();
-    const searchNeedles = fast ? needles.slice(0, 1) : needles;
-
-    for (const needle of searchNeedles) {
-        if (merged.length >= cap) break;
-        await runCatalogSearch(needle);
-        if (merged.length >= 3) break;
+        return result?.items || [];
+    } catch (error) {
+        console.warn("Image catalog keyword search failed:", error?.message || error);
+        return [];
     }
-
-    return merged.slice(0, cap);
 };
 
 const searchCatalogByEmbeddingPhrase = async (phrase, { limit = 32 } = {}) => {
@@ -201,7 +169,7 @@ const searchCatalogByEmbeddingPhrase = async (phrase, { limit = 32 } = {}) => {
 };
 
 /**
- * Full AI image search: VL keywords + ES + embedding fallback.
+ * Full AI image search: VL keywords + Elasticsearch catalog (+ embedding fallback).
  */
 const resolveImageSearchFromAi = async ({
     imageAddress,
@@ -226,6 +194,7 @@ const resolveImageSearchFromAi = async ({
             category,
             fieldName,
             fieldValue,
+            vision,
         });
     } catch (keywordError) {
         console.warn("AI keyword image search failed:", keywordError?.message || keywordError);

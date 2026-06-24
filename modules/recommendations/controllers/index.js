@@ -7,7 +7,50 @@ const {
     resolveIdentity,
 } = require("../services/recommendationEngineService");
 const { publishRecommendationEvent } = require("../services/eventStreamService");
+const { isMongoConnected } = require("../../../config/db");
+const { withPromiseTimeout } = require("../../../utils/mongoQueryOptions");
+const { isImageSearchBusy } = require("../../../utils/imageSearchGate");
 const Cart = require("../../orders/services/cart");
+
+const SURFACE_MONGO_BUDGET_MS = Math.min(
+    Math.max(Number(process.env.RECOMMENDATION_SURFACE_BUDGET_MS || 12000), 3000),
+    30000
+);
+
+const isMongoDegradedError = (error) => {
+    const name = String(error?.name || "");
+    const msg = String(error?.message || error || "").toLowerCase();
+    return name === "MongoNetworkTimeoutError"
+        || name === "MongoServerSelectionError"
+        || name === "MongoPoolClearedError"
+        || msg.includes("timed out")
+        || msg.includes("time limit")
+        || msg.includes("pool cleared");
+};
+
+const buildSurfacePayload = (req, items, total, extras = {}) => {
+    const limit = Math.min(
+        Math.max(Number(req.query.limit) || extras.limit || 12, 1),
+        24
+    );
+    const skip = Number(req.query.skip) || 1;
+    const safeTotal = Number(total) || 0;
+
+    if (typeof req.nextPageOptions === "function") {
+        return req.nextPageOptions(items, safeTotal, extras);
+    }
+
+    const { hasMore, ...othersMeta } = extras || {};
+    return {
+        total: safeTotal,
+        items,
+        skip,
+        limit,
+        totalPages: Math.ceil(safeTotal / limit) || 0,
+        ...(typeof hasMore === "boolean" ? { hasMore } : {}),
+        others: Object.keys(othersMeta).length ? othersMeta : null,
+    };
+};
 
 const respondSurface = async (req, res, surface, options = {}) => {
     try {
@@ -16,21 +59,73 @@ const respondSurface = async (req, res, surface, options = {}) => {
             24
         );
 
-        let result = await getPersonalizedSurface(surface, req, { ...options, limit });
-        if (!result.items?.length) {
-            const fallback = await getFastFallback(req, { limit });
-            result = { ...result, items: fallback, cached: false, fallback: true };
+        if (!isMongoConnected() || isImageSearchBusy()) {
+            return res.success(buildSurfacePayload(req, [], 0, {
+                surface,
+                personalized: false,
+                cached: false,
+                fallback: true,
+                mongoSkipped: true,
+                imageSearchBusy: isImageSearchBusy(),
+            }));
         }
 
-        await priceExchange(result.items, req.exchangeRate);
-        return res.success(req.nextPageOptions(result.items, result.items.length, {
+        let result;
+        let mongoDegraded = false;
+        try {
+            result = await withPromiseTimeout(
+                getPersonalizedSurface(surface, req, { ...options, limit }),
+                SURFACE_MONGO_BUDGET_MS,
+                { items: [], cached: false, fallback: true, surface, timedOut: true }
+            );
+        } catch (surfaceError) {
+            if (!isMongoDegradedError(surfaceError)) throw surfaceError;
+            console.warn(`recommendations.${surface} degraded:`, surfaceError?.message || surfaceError);
+            mongoDegraded = true;
+            result = { items: [], cached: false, fallback: true, surface };
+        }
+
+        if (!result.items?.length && !mongoDegraded && !result.timedOut) {
+            try {
+                const fallback = await withPromiseTimeout(
+                    getFastFallback(req, { limit }),
+                    SURFACE_MONGO_BUDGET_MS,
+                    []
+                );
+                result = { ...result, items: fallback, cached: false, fallback: true };
+            } catch (fallbackError) {
+                if (!isMongoDegradedError(fallbackError)) throw fallbackError;
+                console.warn(`recommendations.${surface} fallback degraded:`, fallbackError?.message || fallbackError);
+                mongoDegraded = true;
+                result = { ...result, items: [], cached: false, fallback: true };
+            }
+        }
+
+        try {
+            await priceExchange(result.items, req.exchangeRate);
+        } catch (exchangeError) {
+            console.warn(`recommendations.${surface} price exchange failed:`, exchangeError?.message || exchangeError);
+        }
+
+        return res.success(buildSurfacePayload(req, result.items, result.items.length, {
             surface,
-            personalized: true,
+            personalized: Boolean(result.items.length),
             cached: result.cached,
             fallback: Boolean(result.fallback),
             abGroup: result.abGroup,
+            ...(mongoDegraded || result.timedOut ? { mongoDegraded: true } : {}),
         }));
     } catch (error) {
+        if (isMongoDegradedError(error)) {
+            console.warn(`recommendations.${surface} degraded:`, error?.message || error);
+            return res.success(buildSurfacePayload(req, [], 0, {
+                surface,
+                personalized: false,
+                cached: false,
+                fallback: true,
+                mongoDegraded: true,
+            }));
+        }
         console.error(`recommendations.${surface}`, error);
         return res.error(error);
     }
@@ -90,6 +185,10 @@ module.exports = {
     /** Client-side behavioral signals (dwell time, scroll depth, filters). */
     trackEngagement: async (req, res) => {
         try {
+            if (!isMongoConnected()) {
+                return res.success("EVENT_RECORDED", { recorded: false, skipped: true });
+            }
+
             const {
                 eventType = "view",
                 productId,

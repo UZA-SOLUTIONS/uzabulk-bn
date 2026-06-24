@@ -189,7 +189,7 @@ module.exports = {
         if (searchQuery) bool.must = [buildFunctionScore(searchQuery)];
         const q = normalizeSearchQuery(search);
         if (q && global._model?.FrequentlySearch?.set) {
-            _model.FrequentlySearch.set(q);
+            void _model.FrequentlySearch.set(q).catch(() => {});
         }
 
         const resolvedSort = buildEsSort({ search, orderBy, order, sort });
@@ -220,7 +220,7 @@ module.exports = {
         }
         const q = normalizeSearchQuery(query?.search);
         if (q && global._model?.FrequentlySearch?.set) {
-            _model.FrequentlySearch.set(q);
+            void _model.FrequentlySearch.set(q).catch(() => {});
         }
 
         if (query?.fieldName && query?.fieldValue !== undefined && query?.fieldValue !== null && String(query.fieldValue).trim() !== "") {

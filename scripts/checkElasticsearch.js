@@ -44,6 +44,28 @@ const run = async () => {
     } catch (_) {
         console.log("Cluster health check skipped.");
     }
+
+    try {
+        const aliasRes = await fetch(`${baseUrl}/products/_alias`, {
+            signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (aliasRes.ok) {
+            const aliasBody = await aliasRes.json();
+            const indices = Object.keys(aliasBody || {});
+            if (indices.length) {
+                console.log(`Alias 'products' -> ${indices.join(", ")}`);
+            }
+        }
+        const countRes = await fetch(`${baseUrl}/products/_count`, {
+            signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (countRes.ok) {
+            const countBody = await countRes.json();
+            console.log(`Searchable products in alias: ${countBody?.count ?? "unknown"}`);
+        }
+    } catch (_) {
+        console.log("Index alias/count check skipped.");
+    }
 };
 
 run().finally(() => setTimeout(() => process.exit(), 50));

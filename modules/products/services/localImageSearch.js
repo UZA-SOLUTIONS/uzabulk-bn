@@ -65,7 +65,7 @@ const searchLocalImage = async ({ imageAddress, limit = 32 }) => {
 
     try {
         const { stdout } = await execFileAsync(LOCAL_IMAGE_SEARCH_PYTHON_BIN, args, {
-            timeout: 180000,
+            timeout: 25_000,
             windowsHide: true,
             maxBuffer: 8 * 1024 * 1024,
         });
@@ -118,7 +118,7 @@ const searchLocalImageLive = async ({ imageAddress, candidates = [], limit = 32 
             tempPath,
         ];
         const { stdout } = await execFileAsync(LOCAL_IMAGE_SEARCH_PYTHON_BIN, args, {
-            timeout: 180000,
+            timeout: 25_000,
             windowsHide: true,
             maxBuffer: 8 * 1024 * 1024,
         });

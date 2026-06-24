@@ -1,5 +1,7 @@
 const Order = require("../models/ordersTable");
 const { sync1688OrderState } = require("../modules/orders/services/alibabaOrderRelay");
+const { isMongoConnected } = require("../config/db");
+const { isImageSearchBusy } = require("../utils/imageSearchGate");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ENABLED = String(process.env.ALIBABA_LOGISTICS_JOB_ENABLED || "true").toLowerCase() !== "false";
@@ -21,6 +23,16 @@ let running = false;
 const runLogisticsPollingJob = async () => {
     if (running) {
         console.log("[1688-logistics-job] Skipped — previous run still active");
+        return;
+    }
+
+    if (!isMongoConnected()) {
+        console.log("[1688-logistics-job] Skipped — MongoDB not connected");
+        return;
+    }
+
+    if (isImageSearchBusy()) {
+        console.log("[1688-logistics-job] Skipped — image search in progress");
         return;
     }
 

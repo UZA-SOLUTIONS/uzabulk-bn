@@ -2,6 +2,7 @@ const Product = require("../../../models/productsTable");
 const esProductService = require("./esProductService");
 const { expandSearchQuery, basicQueryCleanup, normalizeTerm } = require("../../ai/services/aiTextSearchService");
 const { getElasticsearchAvailability } = require("../../../elasticsearch/availability");
+const { withMongoMaxTime } = require("../../../utils/mongoQueryOptions");
 
 const SEARCH_TIMEOUT_MS = Math.min(
     Math.max(Number(process.env.SEARCH_SOURCE_TIMEOUT_MS || 8000), 3000),
@@ -19,11 +20,19 @@ const CATALOG_BATCH_LIMIT = Math.min(
     Math.max(Number(process.env.SEARCH_CATALOG_BATCH_LIMIT || 400), 120),
     800
 );
+const REMOTE_MONGO_SEARCH = String(process.env.SEARCH_REMOTE_MONGO ?? "true").toLowerCase() !== "false";
+/** 1688 text-search fallback is off by default — catalog + ES only. Set SEARCH_INCLUDE_1688=true to enable. */
+const SEARCH_INCLUDE_1688 = String(process.env.SEARCH_INCLUDE_1688 ?? "false").toLowerCase() === "true";
+/** Image search uses local Elasticsearch when available (same index as text search). */
+const IMAGE_SEARCH_USE_ES = String(process.env.IMAGE_SEARCH_USE_ELASTICSEARCH ?? "true").toLowerCase() !== "false";
+const IMAGE_SEARCH_ES_MAX_NEEDLES = Math.min(
+    Math.max(Number(process.env.IMAGE_SEARCH_ES_MAX_NEEDLES || 3), 1),
+    5
+);
 const ALIBABA_SEARCH_TIMEOUT_MS = Math.min(
     Math.max(Number(process.env.SEARCH_ALIBABA_TIMEOUT_MS || 6000), 3000),
     12000
 );
-const REMOTE_MONGO_SEARCH = String(process.env.SEARCH_REMOTE_MONGO || "0") === "1";
 
 const listProjection = {
     name: 1,
@@ -189,7 +198,224 @@ const rankSearchResults = (items = [], terms = {}, variants = []) =>
 
 const buildMongoCategoryFilter = (category) => {
     if (!category) return {};
-    return { categories: category };
+    const id = String(category).trim();
+    if (!/^[a-fA-F0-9]{24}$/.test(id)) return {};
+    return { categories: id };
+};
+
+const IMAGE_SEARCH_STOP_WORDS = new Set([
+    "wholesale", "bulk", "purchase", "resale", "buy", "selling", "sell", "for",
+    "the", "and", "with", "from", "shop", "store", "b2b", "trade", "supplier",
+    "smartphones", "smartphone", "phones", "phone", "mobile", "device", "devices",
+    "product", "products", "item", "items", "goods", "merchandise", "commercial",
+    "in", "on", "at", "to", "of", "by", "or", "an", "a",
+]);
+
+const GENERIC_NEEDLE_TERMS = new Set([
+    "silver", "gold", "black", "white", "blue", "red", "green", "grey", "gray",
+    "electronics", "electronic", "accessories", "accessory", "general", "other",
+    "new", "hot", "best", "quality", "high", "premium", "original", "genuine",
+    "color", "colour", "style", "fashion", "portable", "mini", "small", "large",
+    "gray", "grey",
+]);
+
+const distillCatalogTerm = (value = "") => {
+    const words = normalizeTerm(value)
+        .split(" ")
+        .filter((word) => word.length > 1 && !IMAGE_SEARCH_STOP_WORDS.has(word));
+    return words.join(" ").trim();
+};
+
+/** Short product-name needles for image search (avoids long B2B vision phrases). */
+const buildImageSearchCatalogNeedles = ({
+    primaryKeyword = "",
+    searchPhrase = "",
+    objectLabel = "",
+    keywords = [],
+} = {}) => {
+    const needles = [];
+    const seen = new Set();
+    const add = (value) => {
+        const distilled = distillCatalogTerm(value);
+        if (!distilled || distilled.length < 3 || seen.has(distilled)) return;
+        seen.add(distilled);
+        needles.push(distilled);
+    };
+
+    add(primaryKeyword);
+    add(objectLabel);
+    (Array.isArray(keywords) ? keywords : []).slice(0, 8).forEach(add);
+    add(searchPhrase);
+
+    const baseWords = normalizeTerm(primaryKeyword || objectLabel || searchPhrase)
+        .split(" ")
+        .filter((word) => word.length > 2 && !IMAGE_SEARCH_STOP_WORDS.has(word));
+
+    if (baseWords.length >= 2) {
+        add(baseWords.slice(0, 2).join(" "));
+        if (baseWords.length >= 3) add(baseWords.slice(0, 3).join(" "));
+    } else if (baseWords.length === 1) {
+        add(baseWords[0]);
+    }
+
+    return needles.sort((a, b) => a.length - b.length).slice(0, 8);
+};
+
+const rankImageSearchNeedles = (needles = []) => {
+    const unique = [...new Set(
+        (needles || []).map((needle) => distillCatalogTerm(needle)).filter((needle) => needle.length >= 3)
+    )];
+
+    return unique
+        .filter((needle) => {
+            const words = needle.split(" ").filter(Boolean);
+            if (words.length === 1 && GENERIC_NEEDLE_TERMS.has(words[0])) return false;
+            return true;
+        })
+        .map((needle) => {
+            const words = needle.split(" ").filter(Boolean);
+            let score = words.length * 25 + Math.min(needle.length, 40);
+            if (words.some((word) => !GENERIC_NEEDLE_TERMS.has(word) && word.length > 3)) score += 10;
+            return { needle, score };
+        })
+        .sort((a, b) => b.score - a.score)
+        .map((row) => row.needle);
+};
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isMongoTimeoutError = (error) => {
+    const name = String(error?.name || "");
+    const msg = String(error?.message || error || "").toLowerCase();
+    return name === "MongoNetworkTimeoutError" || msg.includes("timed out");
+};
+
+const queryMongoByCatalogNeedle = async (needle, { limit = 32, category, useDedicated = true } = {}) => {
+    const term = escapeRegex(distillCatalogTerm(needle));
+    if (!term || term.length < 3) return [];
+
+    const regex = { $regex: term, $options: "i" };
+    const query = {
+        status: "active",
+        $or: [
+            { name: regex },
+            { short_description: regex },
+            { sku: regex },
+        ],
+        ...buildMongoCategoryFilter(category),
+    };
+
+    const cap = Math.max(1, Math.min(Number(limit) || 32, 48));
+    const projection = listProjection;
+    const sort = { sold_count: -1, average_rating: -1, rating_count: -1, _id: -1 };
+
+    if (useDedicated) {
+        try {
+            const { getImageSearchProductModel } = require("../../../config/db/imageSearchConnection");
+            const DedicatedProduct = await getImageSearchProductModel();
+            if (DedicatedProduct) {
+                return DedicatedProduct.find(query).select(projection).sort(sort).limit(cap).lean();
+            }
+        } catch (error) {
+            console.warn("[catalog-image] dedicated mongo failed, using default pool:", error?.message || error);
+        }
+    }
+
+    return Product.find(query).select(projection).sort(sort).limit(cap).lean();
+};
+
+/** Catalog lookup — best product needle only, retry on connection timeout. */
+const searchCatalogByNameNeedles = async ({ needles = [], limit = 32, category } = {}) => {
+    const terms = rankImageSearchNeedles(needles).slice(0, 2);
+    const cap = Math.max(1, Math.min(Number(limit) || 32, 48));
+    if (!terms.length) return { items: [], total: 0 };
+
+    const attempts = Math.min(Math.max(Number(process.env.IMAGE_SEARCH_CATALOG_RETRIES || 2), 1), 4);
+
+    for (const term of terms) {
+        for (let tryNum = 1; tryNum <= attempts; tryNum += 1) {
+            const started = Date.now();
+            try {
+                const rows = await queryMongoByCatalogNeedle(term, { limit: cap, category, useDedicated: true });
+                console.log(`[catalog-image] needle="${term}" -> ${rows.length} (${Date.now() - started}ms, try ${tryNum})`);
+                if (rows.length) {
+                    const items = rows.slice(0, cap).map(sanitizeSearchItem);
+                    return { items, total: items.length, engine: "mongo_fallback" };
+                }
+                break;
+            } catch (error) {
+                console.warn(`[catalog-image] needle="${term}" failed (try ${tryNum}):`, error?.message || error);
+                if (!isMongoTimeoutError(error) || tryNum >= attempts) break;
+                await sleep(1500 * tryNum);
+            }
+        }
+    }
+
+    return { items: [], total: 0, engine: "mongo_fallback" };
+};
+
+/**
+ * Image search catalog lookup via Elasticsearch — fast local index, same as text search.
+ */
+const searchCatalogByElasticsearchNeedles = async ({
+    needles = [],
+    limit = 32,
+    skip = 0,
+    category,
+    fieldName,
+    fieldValue,
+    maxNeedles = IMAGE_SEARCH_ES_MAX_NEEDLES,
+} = {}) => {
+    if (!IMAGE_SEARCH_USE_ES || !(await getElasticsearchAvailability())) {
+        return { items: [], total: 0, engine: "none" };
+    }
+
+    const ranked = rankImageSearchNeedles(needles).slice(0, maxNeedles);
+    if (!ranked.length) return { items: [], total: 0, engine: "none" };
+
+    const cap = Math.max(1, Math.min(Number(limit) || 32, 48));
+    const merged = [];
+    const seen = new Set();
+    let total = 0;
+    const terms = { primary: ranked[0], exactPhrase: ranked[0] };
+
+    for (const needle of ranked) {
+        if (merged.length >= cap) break;
+        const started = Date.now();
+        try {
+            const payload = unwrapEsSearchResult(
+                await esProductService.list({
+                    search: needle,
+                    limit: cap,
+                    skip: normalizeSearchSkip(skip),
+                    category,
+                    fieldName,
+                    fieldValue,
+                    orderBy: "relevance",
+                    order: -1,
+                })
+            );
+            total = Math.max(total, payload.total);
+            payload.items.forEach((item) => {
+                const key = itemKey(item);
+                if (!key || seen.has(key)) return;
+                seen.add(key);
+                merged.push(sanitizeSearchItem(item));
+            });
+            console.log(
+                `[catalog-image-es] needle="${needle}" -> ${payload.items.length} (${Date.now() - started}ms)`
+            );
+        } catch (error) {
+            console.warn(`[catalog-image-es] needle="${needle}" failed:`, error?.message || error);
+        }
+    }
+
+    const items = rankSearchResults(merged, terms, ranked).slice(0, cap);
+    return {
+        items,
+        total: Math.max(total, items.length),
+        engine: items.length ? "elasticsearch" : "none",
+    };
 };
 
 const queryMongoByNameNeedle = async (needle, { limit = 32, category } = {}) => {
@@ -202,10 +428,10 @@ const queryMongoByNameNeedle = async (needle, { limit = 32, category } = {}) => 
         ...buildMongoCategoryFilter(category),
     };
 
-    return Product.find(query)
+    return withMongoMaxTime(Product.find(query)
         .select(listProjection)
         .sort({ average_rating: -1, rating_count: -1, sold_count: -1, _id: -1 })
-        .limit(limit)
+        .limit(limit))
         .lean();
 };
 
@@ -220,10 +446,10 @@ const queryMongoByText = async (needle, { limit = 32, category } = {}) => {
     };
 
     try {
-        return await Product.find(filter, { score: { $meta: "textScore" } })
+        return await withMongoMaxTime(Product.find(filter, { score: { $meta: "textScore" } })
             .select(listProjection)
             .sort({ score: { $meta: "textScore" } })
-            .limit(limit)
+            .limit(limit))
             .lean();
     } catch {
         return [];
@@ -358,6 +584,24 @@ const unwrapEsSearchResult = (result) => {
     };
 };
 
+const normalizeSearchSkip = (skip) => Math.max(0, Number(skip) || 0);
+
+const buildSearchMeta = (raw, terms, needle, engine, extra = {}) => ({
+    engine,
+    aiExpanded: Boolean(terms.aiExpanded),
+    originalQuery: raw,
+    correctedQuery: raw,
+    searchQuery: needle,
+    primary: terms.primary,
+    keywords: terms.keywords,
+    productType: terms.productType || "",
+    categoryHint: terms.categoryHint || "",
+    userIntent: "",
+    exactPhrase: terms.exactPhrase || terms.primary || "",
+    didCorrect: false,
+    ...extra,
+});
+
 const searchElasticsearchCatalog = async ({
     raw,
     terms,
@@ -368,13 +612,14 @@ const searchElasticsearchCatalog = async ({
     fieldName,
     fieldValue,
     singleCategoryOnly,
+    maxVariants = 4,
 }) => {
     const baseQuery = {
         category,
         fieldName,
         fieldValue,
         limit,
-        skip,
+        skip: normalizeSearchSkip(skip),
         singleCategoryOnly,
         orderBy: "relevance",
         order: -1,
@@ -384,7 +629,7 @@ const searchElasticsearchCatalog = async ({
     const seen = new Set();
     let primaryPayload = { items: [], total: 0 };
 
-    for (const variant of variants.slice(0, 4)) {
+    for (const variant of variants.slice(0, maxVariants)) {
         if (merged.length >= limit) break;
         const payload = unwrapEsSearchResult(
             await esProductService.list({ ...baseQuery, search: variant })
@@ -424,6 +669,40 @@ const searchCatalogByText = async ({
     const terms = await expandSearchQuery(raw, {}, { fast });
     const variants = buildSearchVariants(raw, terms);
     const needle = terms.primary || terms.correctedQuery || raw;
+    const esSkip = normalizeSearchSkip(skip);
+
+    if (fast && await getElasticsearchAvailability()) {
+        try {
+            const payload = unwrapEsSearchResult(
+                await esProductService.list({
+                    search: raw,
+                    limit,
+                    skip: esSkip,
+                    category,
+                    fieldName,
+                    fieldValue,
+                    singleCategoryOnly,
+                    orderBy: "relevance",
+                    order: -1,
+                })
+            );
+            const items = rankSearchResults(payload.items, terms, variants)
+                .slice(0, limit)
+                .map(sanitizeSearchItem);
+            return {
+                items,
+                total: Math.max(payload.total, items.length),
+                searchMeta: buildSearchMeta(raw, terms, needle, "elasticsearch"),
+            };
+        } catch (error) {
+            console.warn("Fast Elasticsearch search failed:", error?.message || error);
+            return {
+                items: [],
+                total: 0,
+                searchMeta: buildSearchMeta(raw, terms, needle, "elasticsearch"),
+            };
+        }
+    }
 
     let merged = [];
     let total = 0;
@@ -436,7 +715,7 @@ const searchCatalogByText = async ({
                 terms,
                 variants,
                 limit,
-                skip: Math.max(1, Number(skip) || 1),
+                skip: esSkip,
                 category,
                 fieldName,
                 fieldValue,
@@ -451,8 +730,13 @@ const searchCatalogByText = async ({
         }
     }
 
-    if (merged.length < limit) {
-        const mongoItems = await searchMongoCatalog(raw, terms, { limit, category });
+    const needsMongoFallback = merged.length === 0;
+    if (needsMongoFallback) {
+        const mongoItems = await withTimeout(
+            searchMongoCatalog(raw, terms, { limit, category }),
+            MONGO_SEARCH_TIMEOUT_MS,
+            []
+        );
         const seen = new Set(merged.map(itemKey));
         mongoItems.forEach((item) => {
             const key = itemKey(item);
@@ -464,7 +748,7 @@ const searchCatalogByText = async ({
         else if (mongoItems.length && engine === "elasticsearch") engine = "elasticsearch+mongo";
     }
 
-    if (!skipExternal && merged.length < 3) {
+    if (!skipExternal && !fast && SEARCH_INCLUDE_1688 && merged.length < 3) {
         const alibabaItems = await searchAlibabaFallback({ terms, variants, limit, skip });
         if (alibabaItems.length) {
             const seen = new Set(merged.map(itemKey));
@@ -485,106 +769,61 @@ const searchCatalogByText = async ({
     return {
         items,
         total: Math.max(total, items.length),
-        searchMeta: {
-            engine,
-            aiExpanded: Boolean(terms.aiExpanded),
-            originalQuery: raw,
-            correctedQuery: raw,
-            searchQuery: needle,
-            primary: terms.primary,
-            keywords: terms.keywords,
-            productType: terms.productType || "",
-            categoryHint: terms.categoryHint || "",
-            userIntent: "",
-            exactPhrase: terms.exactPhrase || terms.primary || "",
-            didCorrect: false,
-        },
+        searchMeta: buildSearchMeta(raw, terms, needle, engine),
     };
 };
 
 /**
- * Lightweight catalog lookup for image search — skips ES and large batch scans.
+ * Image search catalog lookup — Elasticsearch first (local index), Mongo regex fallback.
  */
-const searchCatalogForImage = async ({ search = "", limit = 32, category } = {}) => {
-    const raw = String(search || "").trim();
-    if (!raw) return { items: [], total: 0 };
+const searchCatalogForImage = async ({
+    search = "",
+    limit = 32,
+    skip = 0,
+    category,
+    vision,
+    fieldName,
+    fieldValue,
+} = {}) => {
+    const needles = buildImageSearchCatalogNeedles({
+        primaryKeyword: vision?.primaryKeyword || search,
+        searchPhrase: vision?.searchPhrase || search,
+        objectLabel: vision?.objectLabel || "",
+        keywords: vision?.keywords || [],
+    });
 
-    const cap = Math.max(1, Math.min(Number(limit) || 32, 48));
-    const merged = [];
-    const seen = new Set();
-    const ingest = (items = []) => {
-        items.forEach((item) => {
-            const key = itemKey(item);
-            if (!key || seen.has(key)) return;
-            seen.add(key);
-            merged.push(item);
-        });
+    if (!needles.length) {
+        const raw = String(search || "").trim();
+        if (!raw) return { items: [], total: 0, engine: "none" };
+        needles.push(raw);
+    }
+
+    const esResult = await searchCatalogByElasticsearchNeedles({
+        needles,
+        limit,
+        skip,
+        category,
+        fieldName,
+        fieldValue,
+    });
+    if (esResult.items.length) {
+        return esResult;
+    }
+
+    const mongoResult = await searchCatalogByNameNeedles({ needles, limit, category });
+    return {
+        items: mongoResult.items || [],
+        total: mongoResult.total || 0,
+        engine: mongoResult.items?.length ? "mongo_fallback" : "none",
     };
-
-    const needles = [];
-    const needleSeen = new Set();
-    const addNeedle = (value) => {
-        const term = normalizeTerm(value);
-        if (!term || term.length < 2 || needleSeen.has(term)) return;
-        needleSeen.add(term);
-        needles.push(term);
-    };
-    const words = raw.toLowerCase().split(/\s+/).filter((token) => token.length >= 2);
-    if (words.length >= 2) addNeedle(words.slice(-2).join(" "));
-    addNeedle(raw);
-
-    for (const needle of needles.slice(0, 2)) {
-        if (merged.length >= cap) break;
-
-        try {
-            ingest(await queryMongoByText(needle, { limit: cap, category }));
-        } catch (error) {
-            console.warn("Image catalog text query failed:", error?.message || error);
-        }
-
-        if (merged.length < 3) {
-            try {
-                ingest(await queryMongoByNameNeedle(needle, { limit: cap, category }));
-            } catch (error) {
-                console.warn("Image catalog name query failed:", error?.message || error);
-            }
-        }
-    }
-
-    if (merged.length < 3) {
-        const terms = basicQueryCleanup(raw);
-        const variants = buildSearchVariants(raw, terms);
-        try {
-            const batch = await Product.find({
-                status: "active",
-                ...buildMongoCategoryFilter(category),
-            })
-                .select(listProjection)
-                .sort({ date_created_utc: -1, _id: -1 })
-                .limit(IMAGE_SEARCH_BATCH_LIMIT)
-                .lean();
-            ingest(
-                rankSearchResults(
-                    batch.filter((item) => matchesAnyVariant(item, variants)),
-                    terms,
-                    variants
-                )
-            );
-        } catch (error) {
-            console.warn("Image catalog batch query failed:", error?.message || error);
-        }
-    }
-
-    const items = merged.slice(0, cap).map(sanitizeSearchItem);
-    if (items.length) {
-        await Product.populate(items, { path: "featured_image", select: "link -_id" });
-    }
-    return { items, total: items.length };
 };
 
 module.exports = {
     searchCatalogByText,
     searchCatalogForImage,
+    searchCatalogByNameNeedles,
+    buildImageSearchCatalogNeedles,
+    rankImageSearchNeedles,
     buildSearchVariants,
     rankSearchResults,
     sanitizeSearchItem,

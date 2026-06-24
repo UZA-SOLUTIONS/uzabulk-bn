@@ -44,7 +44,7 @@ const compressImageBase64 = async (localPath) => {
 
     try {
         const { stdout } = await execFileAsync(pythonBin, ["-c", script, localPath], {
-            timeout: 30_000,
+            timeout: 8_000,
             maxBuffer: 2 * 1024 * 1024,
         });
         const compressed = String(stdout || "").trim();
@@ -72,21 +72,18 @@ const resolveAlibabaImageSearchInput = async (imageAddress) => {
 
     const localPath = guessLocalImagePath(url);
     if (localPath) {
-        const alicdnFromFile = buildAlicdnImageAddress(path.basename(localPath));
-        if (alicdnFromFile) {
-            return { imageAddress: alicdnFromFile };
-        }
-
         const imageBase64 = await compressImageBase64(localPath);
-        if (imageBase64.length <= 120_000) {
-            return { imageBase64 };
-        }
 
         const imageId = await uploadProductImage({ imageBase64 });
         if (imageId) {
             return { imageId: String(imageId) };
         }
 
+        if (imageBase64.length <= 90_000) {
+            return { imageBase64 };
+        }
+
+        console.warn("[1688] image upload failed and base64 too large for imageQuery");
         return null;
     }
 

@@ -3,6 +3,10 @@ const { processVariations } = require("../../../utils");
 const { enrichProductReviewsAndRatings } = require('../helper/ratings');
 const { isValidObjectId } = require('../../../validators/validator');
 const { priceExchange } = require('../../../helpers/helper');
+const { mapPool } = require('../../../utils/mapPool');
+const { isMongoConnected } = require('../../../config/db');
+const { withPromiseTimeout } = require('../../../utils/mongoQueryOptions');
+const { beginImageSearch, endImageSearch, isImageSearchBusy, markImageSearchPending } = require('../../../utils/imageSearchGate');
 const productIndex = require('../../../elasticsearch/indexes/productIndex');
 const esProductService = require('../services/esProductService');
 const { getProductDetail, searchImageQuery } = require('../services/alibaba');
@@ -286,36 +290,71 @@ const imageProjection = {
     offerId: 1,
 };
 
+const CATEGORY_THUMBNAIL_CONCURRENCY = Math.min(
+    Math.max(Number(process.env.CATEGORY_THUMBNAIL_CONCURRENCY || 1), 1),
+    4
+);
+
+const safeCategoryById = async (categoryId) => {
+    if (!categoryId || !isMongoConnected()) return null;
+    try {
+        return await withPromiseTimeout(
+            _model.Category.findById(categoryId),
+            4000,
+            null
+        );
+    } catch (err) {
+        console.warn("[products] category lookup failed:", err?.message || err);
+        return null;
+    }
+};
+
+const safePriceExchange = async (items, exchangeRate) => {
+    if (!items || (Array.isArray(items) && !items.length)) return;
+    try {
+        await priceExchange(items, exchangeRate);
+    } catch (err) {
+        console.warn("[products] price exchange failed:", err?.message || err);
+    }
+};
+
 const fetchCategoryThumbnailUrl = async (categoryId, refresh = "") => {
-    const categoryIds = await expandCategoryFilterIds(categoryId);
-    const match = { status: "active" };
+    if (!isMongoConnected()) return "";
+
+    let categoryIds = [categoryId];
+    try {
+        categoryIds = await expandCategoryFilterIds(categoryId);
+    } catch (err) {
+        console.warn(`[categoryThumbnails] expandCategoryFilterIds failed for ${categoryId}:`, err?.message || err);
+    }
+
+    const match = {
+        status: "active",
+        featured_image: { $exists: true, $nin: [null, ""] },
+    };
     const categoryMatch = buildMongoCategoryMatch(categoryIds);
     if (categoryMatch) Object.assign(match, categoryMatch);
 
-    const poolSize = 12;
-    const primaryPage = getCategoryRepresentativeSkip(categoryId, refresh, poolSize);
-    const pages = [...new Set([
-        primaryPage,
-        ...Array.from({ length: Math.min(poolSize, 8) }, (_, i) => i + 1),
-    ])];
-
-    for (const page of pages) {
-        const offset = page - 1;
+    try {
         const products = await _model.Product.find(match)
             .sort({ date_created_utc: -1, _id: -1 })
-            .skip(offset)
             .limit(4)
             .select(imageProjection)
-            .populate({ path: "featured_image", select: "link -_id" })
             .lean();
 
         for (const product of products) {
             const url = pickProductImageUrl(product);
             if (url) return url;
         }
+    } catch (err) {
+        console.warn(`[categoryThumbnails] product query failed for ${categoryId}:`, err?.message || err);
     }
 
-    return resolveCategoryIconUrl(categoryId);
+    try {
+        return await resolveCategoryIconUrl(categoryId);
+    } catch (_) {
+        return "";
+    }
 };
 
 const mapProductsByOfferOrder = async (offerIds = []) => {
@@ -329,8 +368,6 @@ const mapProductsByOfferOrder = async (offerIds = []) => {
         offerId: { $in: uniq },
     })
         .select(imageProjection)
-        .populate({ path: "featured_image", select: "link -_id" })
-        .populate({ path: "variations", select: "-meta_data", options: { lean: true } })
         .lean();
 
     const byOffer = new Map(found.map((p) => [String(p.offerId), p]));
@@ -401,17 +438,14 @@ module.exports = {
             if (!search)
                 return res.success("RECORD_FOUND", []);
 
-            const aiSearch = await withRequestTimeout(
-                searchCatalogByText({
-                    search,
-                    limit,
-                    skip,
-                    category,
-                    fast: true,
-                }),
-                10000,
-                { items: [], total: 0, searchMeta: { searchQuery: search } }
-            );
+            const aiSearch = await searchCatalogByText({
+                search,
+                limit,
+                skip,
+                category,
+                fast: true,
+                skipExternal: true,
+            });
             const items = normalizeFeaturedImageLink(aiSearch.items || []);
 
             return res.success("RECORD_FOUND", items, {
@@ -719,6 +753,17 @@ module.exports = {
             const { limit, skip } = req.paginationOptions;
             const imageUrl = typeof image === "string" ? image.trim() : "";
             const onlySingleCategory = singleCategoryOnly === "1" || singleCategoryOnly === "true";
+            const isCategoryThumbPoll = Boolean(category)
+                && !imageUrl
+                && !search
+                && !fieldName
+                && !fieldValue
+                && Number(req.query.limit) === 1;
+
+            if (isImageSearchBusy() && isCategoryThumbPoll) {
+                return res.success(req.nextPageOptions([], 0, { deferred: true }));
+            }
+
             const useRotatedBrowse =
                 !imageUrl
                 && !search
@@ -747,26 +792,37 @@ module.exports = {
                 const imageCountry =
                     typeof country === "string" && country.trim() ? country.trim() : "en";
 
-                const result = await resolveSmartImageSearch({
-                    imageUrl,
-                    limit,
-                    skip: pageNum,
-                    category,
-                    fieldName,
-                    fieldValue,
-                    country: imageCountry,
-                    fast: true,
-                });
+                console.log(`[image-search] list start image=${String(imageUrl).slice(0, 96)}`);
+
+                beginImageSearch();
+                let result;
+                try {
+                    result = await resolveSmartImageSearch({
+                        imageUrl,
+                        limit,
+                        skip: pageNum,
+                        category,
+                        fieldName,
+                        fieldValue,
+                        country: imageCountry,
+                        fallbackSearch: String(search || "").trim(),
+                    });
+                } finally {
+                    endImageSearch();
+                }
 
                 const items = result.items || [];
                 const recommendations = result.recommendations || [];
-                const categoryData = category ? await _model.Category.findById(category) : null;
-                await priceExchange(items, req.exchangeRate);
+                const categoryData = await safeCategoryById(category);
+                await safePriceExchange(items, req.exchangeRate);
                 if (recommendations.length) {
-                    await priceExchange(recommendations, req.exchangeRate);
+                    await safePriceExchange(recommendations, req.exchangeRate);
                 }
 
                 const vision = result.vision || {};
+                console.log(
+                    `[image-search] list done items=${items.length} provider=${result.provider || "none"}`
+                );
                 return res.success(req.nextPageOptions(
                     items,
                     result.total || items.length,
@@ -807,6 +863,7 @@ module.exports = {
                         fieldName,
                         fieldValue,
                         singleCategoryOnly: onlySingleCategory,
+                        skipExternal: true,
                     });
                     rawEsItems = aiTextSearch.items || [];
                     esTotalHits = aiTextSearch.total || 0;
@@ -1001,6 +1058,7 @@ module.exports = {
                 || req.query.prepareOnly === "1";
 
             if (prepareOnly) {
+                markImageSearchPending();
                 return res.success(req.nextPageOptions([], 0, {
                     imageSearch: true,
                     imageSearchProvider: "upload",
@@ -1020,14 +1078,13 @@ module.exports = {
                 fieldName,
                 fieldValue,
                 country,
-                fast: true,
             });
 
             const items = result.items || [];
             const recommendations = result.recommendations || [];
-            await priceExchange(items, req.exchangeRate);
+            await safePriceExchange(items, req.exchangeRate);
             if (recommendations.length) {
-                await priceExchange(recommendations, req.exchangeRate);
+                await safePriceExchange(recommendations, req.exchangeRate);
             }
 
             const vision = result.vision || {};
@@ -1086,6 +1143,10 @@ module.exports = {
 
     categoryThumbnails: async (req, res) => {
         try {
+            if (!isMongoConnected() || isImageSearchBusy()) {
+                return res.success("RECORD_FOUND", {});
+            }
+
             const rawIds = String(req.query.ids || "")
                 .split(",")
                 .map((id) => id.trim())
@@ -1099,16 +1160,15 @@ module.exports = {
             const uniqueIds = [...new Set(rawIds)].slice(0, 32);
             const result = {};
 
-            await Promise.all(
-                uniqueIds.map(async (categoryId) => {
-                    try {
-                        const url = await fetchCategoryThumbnailUrl(categoryId, refresh);
-                        if (url) result[categoryId] = url;
-                    } catch (err) {
-                        console.warn(`categoryThumbnails failed for ${categoryId}:`, err.message);
-                    }
-                })
-            );
+            const thumbConcurrency = CATEGORY_THUMBNAIL_CONCURRENCY;
+            await mapPool(uniqueIds, thumbConcurrency, async (categoryId) => {
+                try {
+                    const url = await fetchCategoryThumbnailUrl(categoryId, refresh);
+                    if (url) result[categoryId] = url;
+                } catch (err) {
+                    console.warn(`categoryThumbnails failed for ${categoryId}:`, err.message);
+                }
+            });
 
             return res.success("RECORD_FOUND", result);
         } catch (error) {

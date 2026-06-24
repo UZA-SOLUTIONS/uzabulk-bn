@@ -150,15 +150,23 @@ const getProductDetail = async (productId) => {
 
 const extractImageSearchOffers = (payload) => {
     if (!payload) return [];
-    if (Array.isArray(payload?.searchOfferModelList)) return payload.searchOfferModelList;
-    if (Array.isArray(payload?.data?.searchOfferModelList)) return payload.data.searchOfferModelList;
-    if (Array.isArray(payload?.data)) return payload.data;
-    if (Array.isArray(payload?.offerList)) return payload.offerList;
+    const candidates = [
+        payload?.searchOfferModelList,
+        payload?.data?.searchOfferModelList,
+        payload?.result?.searchOfferModelList,
+        payload?.offerList,
+        payload?.data?.offerList,
+        payload?.data,
+        payload?.result?.data,
+    ];
+    for (const list of candidates) {
+        if (Array.isArray(list) && list.length) return list;
+    }
     return [];
 };
 
 const mapOfferToProductStub = (row = {}) => {
-    const offerId = String(row?.offerId || "").trim();
+    const offerId = String(row?.offerId || row?.offer_id || row?.id || "").trim();
     if (!offerId) return null;
 
     const price = row?.priceInfo?.price
@@ -171,7 +179,7 @@ const mapOfferToProductStub = (row = {}) => {
         name: row?.subjectTrans || row?.subject || row?.title || "Product",
         price: Number(price) || 0,
         compare_price: 0,
-        featured_image: row?.imageUrl || row?.image || "",
+        featured_image: row?.imageUrl || row?.image || row?.offerImage?.imageUrl || "",
         average_rating: Number(row?.tradeScore || row?.score || 0) || 0,
         rating_count: 0,
         sold_count: Number(row?.monthSold || row?.sales7d || 0) || 0,
@@ -250,15 +258,27 @@ const searchImageQuery = async ({
     const urlPath = client.urlPath(CROSSBORDER_NS, "product.search.imageQuery");
     const offerQueryParam = JSON.stringify(query);
     const result = await client.get(urlPath, { offerQueryParam });
-    return result.ok ? result.data : null;
+    if (!result.ok) {
+        console.warn("[1688] product.search.imageQuery failed:", result.error || "unknown");
+        return null;
+    }
+    return result.data;
 };
 
 const extractKeywordSearchOffers = (payload) => {
     if (!payload) return [];
-    if (Array.isArray(payload)) return payload;
-    if (Array.isArray(payload?.data)) return payload.data;
-    if (Array.isArray(payload?.searchOfferModelList)) return payload.searchOfferModelList;
-    if (Array.isArray(payload?.offerList)) return payload.offerList;
+    const candidates = [
+        payload,
+        payload?.data,
+        payload?.searchOfferModelList,
+        payload?.data?.searchOfferModelList,
+        payload?.offerList,
+        payload?.data?.offerList,
+        payload?.result?.data,
+    ];
+    for (const list of candidates) {
+        if (Array.isArray(list) && list.length) return list;
+    }
     return [];
 };
 
@@ -290,7 +310,7 @@ const searchOffersByKeywords = async ({
             country: String(country || "en").trim() || "en",
         });
         extractKeywordSearchOffers(result).forEach((row) => {
-            const offerId = String(row?.offerId || "").trim();
+            const offerId = String(row?.offerId || row?.offer_id || row?.id || "").trim();
             if (!offerId || seen.has(offerId)) return;
             seen.add(offerId);
             merged.push(row);
@@ -321,7 +341,11 @@ const searchProductsQuery = async ({
     });
 
     const result = await client.get(urlPath, { offerQueryParam });
-    return result.ok ? result.data : null;
+    if (!result.ok) {
+        console.warn("[1688] product.search.query failed:", result.error || keyword);
+        return null;
+    }
+    return result.data;
 };
 
 const getAlibabaProduct = async (productID, opts = {}) => {

@@ -14,8 +14,10 @@ const cors = require('cors');
 const morgan = require('morgan');
 const app = express();
 const commonRes = require("./utils/response")
-// set security HTTP headers
-app.use(helmet());
+// Public product/upload images are embedded on the storefront (often another origin in dev).
+app.use(helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+}));
 
 // Sanitize requests
 app.use(mongoSanitize());
@@ -31,6 +33,13 @@ app.use(compression());
 
 // enable cors
 app.use(cors({ origin: "*" }));
+
+// Uploaded product images must be embeddable on the storefront (different port/origin in dev).
+app.use("/images", (req, res, next) => {
+  res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  next();
+});
 
 // Use Morgan for request logging
 app.use(morgan('dev'));

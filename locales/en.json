@@ -102,5 +102,19 @@
 	"Command find requires authentication": "Command find requires authentication",
 	"Cannot read properties of undefined (reading 'find')": "Cannot read properties of undefined (reading 'find')",
 	"connect ETIMEDOUT 8.211.56.133:27017": "connect ETIMEDOUT 8.211.56.133:27017",
-	"400 <400> InternalError.Algo.InvalidParameter: Failed to download multimodal content": "400 <400> InternalError.Algo.InvalidParameter: Failed to download multimodal content"
+	"400 <400> InternalError.Algo.InvalidParameter: Failed to download multimodal content": "400 <400> InternalError.Algo.InvalidParameter: Failed to download multimodal content",
+	"WELCOME": "WELCOME",
+	"EVENT_RECORDED": "EVENT_RECORDED",
+	"Connection pool for 8.211.56.133:27017 was cleared because another operation failed with: \"connect ETIMEDOUT 8.211.56.133:27017\"": "Connection pool for 8.211.56.133:27017 was cleared because another operation failed with: \"connect ETIMEDOUT 8.211.56.133:27017\"",
+	"connection <monitor> to 8.211.56.133:27017 closed": "connection <monitor> to 8.211.56.133:27017 closed",
+	"connection 3 to 8.211.56.133:27017 timed out": "connection 3 to 8.211.56.133:27017 timed out",
+	"connection 11 to 8.211.56.133:27017 timed out": "connection 11 to 8.211.56.133:27017 timed out",
+	"connection 7 to 8.211.56.133:27017 timed out": "connection 7 to 8.211.56.133:27017 timed out",
+	"connection 2 to 8.211.56.133:27017 timed out": "connection 2 to 8.211.56.133:27017 timed out",
+	"connection 4 to 8.211.56.133:27017 timed out": "connection 4 to 8.211.56.133:27017 timed out",
+	"connection 9 to 8.211.56.133:27017 timed out": "connection 9 to 8.211.56.133:27017 timed out",
+	"connection 1 to 8.211.56.133:27017 timed out": "connection 1 to 8.211.56.133:27017 timed out",
+	"req.nextPageOptions is not a function": "req.nextPageOptions is not a function",
+	"withRequestTimeout is not defined": "withRequestTimeout is not defined",
+	"ASSISTANT_REPLY": "ASSISTANT_REPLY"
 }

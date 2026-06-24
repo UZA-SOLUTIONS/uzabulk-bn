@@ -30,12 +30,32 @@ const { resolveAlibabaImageSearchInput } = require("./resolveAlibabaImageInput")
 const esProductService = require("../services/esProductService");
 
 const { guessLocalImagePath } = require("../../ai/helpers/resolveVisionImageInput");
+const { isMongoConnected } = require("../../../config/db");
+const { withPromiseTimeout } = require("../../../utils/mongoQueryOptions");
 
-
+const IMAGE_SEARCH_MONGO_BUDGET_MS = Math.min(
+    Math.max(Number(process.env.IMAGE_SEARCH_MONGO_BUDGET_MS || 12000), 3000),
+    25000
+);
+const ALIBABA_SEARCH_BUDGET_MS = Math.min(
+    Math.max(Number(process.env.IMAGE_SEARCH_ALIBABA_BUDGET_MS || 18000), 5000),
+    45000
+);
 
 const looksLikeObjectId = (value) => /^[a-fA-F0-9]{24}$/.test(String(value || "").trim());
 
-
+const stubsFromOffers = (offers = [], pageLimit = 32) => {
+    const merged = [];
+    const seen = new Set();
+    offers.forEach((row) => {
+        const offerId = String(row?.offerId || "").trim();
+        if (!offerId || seen.has(offerId)) return;
+        seen.add(offerId);
+        const stub = mapOfferToProductStub(row);
+        if (stub) merged.push(stub);
+    });
+    return merged.slice(0, pageLimit);
+};
 
 const isGoogleImageSearchEnabled = () => {
 
@@ -106,19 +126,10 @@ const mapProductsByOfferOrder = async (offerIds = []) => {
 
 
     const found = await _model.Product.find({
-
         status: "active",
-
         offerId: { $in: uniq },
-
     })
-
         .select(imageProjection)
-
-        .populate({ path: "featured_image", select: "link -_id" })
-
-        .populate({ path: "variations", select: "-meta_data", options: { lean: true } })
-
         .lean();
 
 
@@ -266,55 +277,51 @@ const resolveActiveCatalogItems = async (items = []) => {
 
 
 const mergeCatalogAndStubs = async (offers = [], pageLimit = 32) => {
+    if (!offers.length) return [];
 
     const offerIds = offers
-
         .map((row) => String(row?.offerId || "").trim())
-
         .filter(Boolean);
 
-    const catalogItems = await mapProductsByOfferOrder(offerIds);
+    if (!isMongoConnected()) {
+        return stubsFromOffers(offers, pageLimit);
+    }
+
+    let catalogItems = [];
+    try {
+        catalogItems = await withPromiseTimeout(
+            mapProductsByOfferOrder(offerIds),
+            IMAGE_SEARCH_MONGO_BUDGET_MS,
+            []
+        );
+    } catch (error) {
+        console.warn("[image-search] catalog offer lookup failed:", error?.message || error);
+    }
+
+    if (!catalogItems.length) {
+        return stubsFromOffers(offers, pageLimit);
+    }
 
     const catalogByOffer = new Map(catalogItems.map((item) => [String(item.offerId), item]));
-
-
-
     const merged = [];
-
     const seen = new Set();
 
     offers.forEach((row) => {
-
         const offerId = String(row?.offerId || "").trim();
-
         if (!offerId || seen.has(offerId)) return;
-
         seen.add(offerId);
 
-
-
         const catalogItem = catalogByOffer.get(offerId);
-
         if (catalogItem) {
-
             merged.push(catalogItem);
-
             return;
-
         }
 
-
-
         const stub = mapOfferToProductStub(row);
-
         if (stub) merged.push(stub);
-
     });
 
-
-
     return merged.slice(0, pageLimit);
-
 };
 
 
@@ -336,10 +343,13 @@ const runLocalVisualSearch = async ({ imageAddress, pageLimit = 32 } = {}) => {
     const imageUrl = String(imageAddress || "").trim();
     if (!imageUrl) return null;
 
+    const indexPath = process.env.LOCAL_IMAGE_SEARCH_INDEX
+        || path.resolve(process.cwd(), "data", "image-search", "products.index.faiss");
+    const hasIndex = fs.existsSync(indexPath);
+    const liveEnabled = String(process.env.LOCAL_IMAGE_SEARCH_LIVE_ENABLED ?? "false").toLowerCase() === "true";
+
     try {
-        const indexPath = process.env.LOCAL_IMAGE_SEARCH_INDEX
-            || path.resolve(process.cwd(), "data", "image-search", "products.index.faiss");
-        if (fs.existsSync(indexPath)) {
+        if (hasIndex) {
             const localImageSearch = await searchLocalImage({ imageAddress: imageUrl, limit: pageLimit });
             if (localImageSearch?.offerIds?.length) {
                 const items = (await mapProductsByOfferOrder(localImageSearch.offerIds)).slice(0, pageLimit);
@@ -355,6 +365,10 @@ const runLocalVisualSearch = async ({ imageAddress, pageLimit = 32 } = {}) => {
         }
     } catch (localErr) {
         console.warn("[image-search] Local index failed:", localErr?.message || localErr);
+    }
+
+    if (!liveEnabled) {
+        return null;
     }
 
     try {
@@ -396,54 +410,42 @@ const runLocalVisualSearch = async ({ imageAddress, pageLimit = 32 } = {}) => {
 
 
 const runAlibabaImageSearch = async ({
-
     imageUrl,
-
     pageLimit,
-
     pageSkip,
-
     country,
-
 } = {}) => {
-
     const imageInput = await resolveAlibabaImageSearchInput(imageUrl);
-
     if (!imageInput) {
-
+        console.warn("[1688] image search input could not be prepared for:", String(imageUrl || "").slice(0, 96));
         return null;
-
     }
-
-
 
     const beginPage = Math.max(1, Number(pageSkip) || 1);
-
-    const alibabaResult = await searchImageQuery({
-
-        ...imageInput,
-
-        beginPage,
-
-        pageSize: pageLimit,
-
-        country: String(country || "en").trim() || "en",
-
-    });
-
-
+    const alibabaResult = await withPromiseTimeout(
+        searchImageQuery({
+            ...imageInput,
+            beginPage,
+            pageSize: pageLimit,
+            country: String(country || "en").trim() || "en",
+        }),
+        ALIBABA_SEARCH_BUDGET_MS,
+        null
+    );
 
     const offers = extractImageSearchOffers(alibabaResult);
-
     if (!offers.length) {
-
+        console.warn(
+            "[1688] imageQuery returned no offers",
+            alibabaResult ? `keys=${Object.keys(alibabaResult).join(",")}` : "(null response)"
+        );
         return null;
-
     }
 
-
-
     const items = await mergeCatalogAndStubs(offers, pageLimit);
+    if (!items.length) {
+        console.warn(`[1688] imageQuery had ${offers.length} offers but 0 items after merge`);
+    }
 
     const totalRecords = Number(
 
@@ -605,6 +607,10 @@ const runImageSearchPipeline = async ({
         if (aiImageResult?.vision?.primaryKeyword) {
 
             let items = await resolveActiveCatalogItems(aiImageResult.items || []);
+
+            if (!items.length && aiImageResult.items?.length) {
+                items = aiImageResult.items;
+            }
 
             items = items.slice(0, pageLimit);
 
@@ -773,15 +779,25 @@ const searchAlibabaCatalogByKeywords = async ({
     country = "en",
 } = {}) => {
     const { searchOffersByKeywords } = require("../services/alibaba");
-    const offers = await searchOffersByKeywords({
-        keyword: primaryKeyword,
-        keywords,
-        beginPage: pageSkip,
-        pageSize: pageLimit,
-        country,
-    });
-    if (!offers.length) return [];
+    const offers = await withPromiseTimeout(
+        searchOffersByKeywords({
+            keyword: primaryKeyword,
+            keywords,
+            beginPage: pageSkip,
+            pageSize: pageLimit,
+            country,
+        }),
+        ALIBABA_SEARCH_BUDGET_MS,
+        []
+    );
+    if (!offers.length) {
+        console.warn("[1688] keyword search returned no offers for:", primaryKeyword);
+        return [];
+    }
     const items = await mergeCatalogAndStubs(offers, pageLimit);
+    if (!items.length) {
+        console.warn(`[1688] keyword search had ${offers.length} offers but 0 items after merge`);
+    }
     return items.map((item) => ({
         ...item,
         match_type: item.match_type === "alibaba_image_search"
