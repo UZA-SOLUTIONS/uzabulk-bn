@@ -5,6 +5,7 @@ const { spawn } = require("child_process");
 const Product = require("../../../models/productsTable");
 const ProductBehavior = require("../../../models/productBehaviorTable");
 const { isMongoConnected } = require("../../../config/db");
+const { withPromiseTimeout } = require("../../../utils/mongoQueryOptions");
 const {
     expandCategoryFilterIds,
     buildMongoCategoryMatch,
@@ -17,6 +18,10 @@ const { getPersonalizedSurface } = require("../../recommendations/services/recom
 const { publishRecommendationEvent } = require("../../recommendations/services/eventStreamService");
 
 const DEFAULT_LIMIT = 24;
+const PERSONALIZED_BROWSE_TIMEOUT_MS = Math.min(
+    Math.max(Number(process.env.PERSONALIZED_BROWSE_TIMEOUT_MS || 6000), 2000),
+    15000
+);
 /** Python subprocess budget; override with RECOMMENDER_PYTHON_TIMEOUT_MS (ms), clamped 1.2s–20s. */
 const resolvePythonTimeoutMs = () => {
     const raw = parseInt(process.env.RECOMMENDER_PYTHON_TIMEOUT_MS || "", 10);
@@ -29,6 +34,9 @@ const resolvePythonTimeoutMs = () => {
 const eventScores = {
     view: 1,
     search: 1,
+    filter: 2,
+    dwell: 1,
+    page_view: 1,
     add_to_cart: 5,
     update_cart: 2,
     checkout: 7,
@@ -189,8 +197,7 @@ const getRotatedProducts = async ({
         match.$expr = { $eq: [{ $size: "$categories" }, 1] };
     }
     const safeLimit = Math.max(Number(limit) || DEFAULT_LIMIT, DEFAULT_LIMIT);
-    const dayKey = new Date().toISOString().slice(0, 10);
-    const offset = getSeedNumber(`${dayKey}:${seedKey}:${category || "all"}`) % 300;
+    const offset = getSeedNumber(`${seedKey}:${category || "all"}`) % 500;
 
     let products = await populateProductCards(
         Product.find(match)
@@ -258,8 +265,7 @@ const getHomeBrowseProductPage = async ({ limit, page = 1, skip, seedKey = "" } 
     const safeLimit = Math.max(1, Math.min(Number(limit) || DEFAULT_LIMIT, 100));
     const safePage = resolveCatalogPage(page, skip);
     const match = { status: "active" };
-    const dayKey = new Date().toISOString().slice(0, 10);
-    const baseOffset = getSeedNumber(`${dayKey}:${seedKey}:all`) % 300;
+    const baseOffset = getSeedNumber(`${seedKey}:all`) % 500;
     const pageOffset = baseOffset + (safePage - 1) * safeLimit;
 
     let products = await populateProductCards(
@@ -290,6 +296,11 @@ const getPreferredCategoryIds = (behaviors = []) => {
     const scores = new Map();
     behaviors.forEach((behavior) => {
         const score = Number(behavior.score) || eventScores[behavior.eventType] || 1;
+        const metaCategory = behavior.metadata?.category;
+        if (metaCategory) {
+            const key = String(metaCategory);
+            scores.set(key, (scores.get(key) || 0) + score * 1.5);
+        }
         (behavior.product?.categories || []).forEach((category) => {
             const key = String(category);
             scores.set(key, (scores.get(key) || 0) + score);
@@ -509,7 +520,10 @@ const getRecommendedProducts = async (req, options = {}) => {
 
     if (engineEnabled && isMongoConnected() && !category) {
         try {
-            const result = await getPersonalizedSurface("homepage_feed", req, { limit });
+            const result = await getPersonalizedSurface("homepage_feed", req, {
+                limit,
+                contextKey: String(options.refresh || options.contextKey || "").slice(0, 80),
+            });
             if (result.items?.length) {
                 return result.items.slice(0, limit);
             }
@@ -600,11 +614,127 @@ const getRecommendedProducts = async (req, options = {}) => {
     }
 };
 
+const userHasBrowsingHistory = async (req) => {
+    const identityQuery = getIdentityQuery(req);
+    if (!identityQuery || !isMongoConnected()) return false;
+    const row = await ProductBehavior.findOne(identityQuery).select("_id").lean();
+    return Boolean(row);
+};
+
+const getPersonalizedProductPage = async (req, { limit, page = 1, skip, seedKey = "", refresh = "" } = {}) => {
+    const safeLimit = Math.max(1, Math.min(Number(limit) || DEFAULT_LIMIT, 100));
+    const safePage = resolveCatalogPage(page, skip);
+    const compositeSeed = seedKey || `${buildCatalogSeedKey(req, refresh)}:browse`;
+
+    if (safePage > 1) {
+        return getHomeBrowseProductPage({ limit: safeLimit, page: safePage, seedKey: compositeSeed });
+    }
+
+    const hasHistory = await userHasBrowsingHistory(req);
+    if (!hasHistory) {
+        return getHomeBrowseProductPage({ limit: safeLimit, page: safePage, seedKey: compositeSeed });
+    }
+
+    const pool = await withPromiseTimeout(
+        getRecommendedProducts(req, {
+            limit: Math.min(80, safeLimit + 16),
+            refresh: refresh || compositeSeed,
+        }),
+        PERSONALIZED_BROWSE_TIMEOUT_MS,
+        null
+    );
+
+    if (Array.isArray(pool) && pool.length) {
+        const items = pool.slice(0, safeLimit);
+        const hasMore = pool.length > safeLimit;
+        return {
+            items,
+            hasMore,
+            total: hasMore ? items.length + 1 : items.length,
+        };
+    }
+
+    return getHomeBrowseProductPage({ limit: safeLimit, page: safePage, seedKey: compositeSeed });
+};
+
+const getPersonalizedNewArrivalsPage = async (req, { limit, page = 1, skip, seedKey = "", refresh = "" } = {}) => {
+    const safeLimit = Math.max(1, Math.min(Number(limit) || DEFAULT_LIMIT, 64));
+    const safePage = resolveCatalogPage(page, skip);
+    const compositeSeed = seedKey || `${buildCatalogSeedKey(req, refresh)}:arrivals`;
+
+    const identityQuery = getIdentityQuery(req);
+    let behaviors = [];
+    if (identityQuery && isMongoConnected()) {
+        behaviors = await withPromiseTimeout(
+            ProductBehavior.find(identityQuery)
+                .sort({ created_at: -1 })
+                .limit(80)
+                .populate({ path: "product", select: "name categories average_rating sold_count" })
+                .lean(),
+            4000,
+            []
+        );
+    }
+
+    if (!behaviors.length) {
+        return getRotatedProductPage({
+            limit: safeLimit,
+            page: safePage,
+            seedKey: compositeSeed,
+        });
+    }
+
+    const preferredCategoryIds = getPreferredCategoryIds(behaviors);
+    const poolLimit = Math.min(200, safePage * safeLimit + safeLimit + 48);
+    const relatedOffset = getSeedNumber(`${compositeSeed}:${preferredCategoryIds.join(",")}`) % 80;
+
+    let candidates = [];
+    if (preferredCategoryIds.length) {
+        candidates = await populateProductCards(
+            Product.find({
+                status: "active",
+                categories: { $in: preferredCategoryIds },
+            })
+                .sort({ date_created_utc: -1, _id: -1 })
+                .skip(relatedOffset)
+                .limit(poolLimit)
+        );
+    }
+
+    if (candidates.length < poolLimit) {
+        const rotated = await getRotatedProducts({
+            limit: poolLimit - candidates.length,
+            seedKey: compositeSeed,
+        });
+        const seen = new Set(candidates.map((product) => String(product._id)));
+        rotated.forEach((product) => {
+            const id = String(product._id);
+            if (!seen.has(id)) {
+                seen.add(id);
+                candidates.push(product);
+            }
+        });
+    }
+
+    const ranked = scoreInNode(behaviors, dedupeProductList(candidates));
+    const start = (safePage - 1) * safeLimit;
+    const items = ranked.slice(start, start + safeLimit);
+    const hasMore = start + safeLimit < ranked.length;
+
+    return {
+        items,
+        hasMore,
+        total: hasMore ? start + items.length + 1 : start + items.length,
+    };
+};
+
 module.exports = {
     trackProductBehavior,
     getRecommendedProducts,
     getRotatedProducts,
     getRotatedProductPage,
     getHomeBrowseProductPage,
+    getPersonalizedProductPage,
+    getPersonalizedNewArrivalsPage,
     buildCatalogSeedKey,
 };

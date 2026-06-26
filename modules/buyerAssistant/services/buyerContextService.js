@@ -2,6 +2,7 @@ const User = require("../../../models/userTable");
 const Order = require("../../../models/ordersTable");
 const Cart = require("../../../models/cartTable");
 const Address = require("../../../models/addressTable");
+const { normalizeOrderLineItems, buildOrderLineItemsText } = require("./orderKnowledgeService");
 
 const displayName = (user = {}) =>
     user.name
@@ -48,7 +49,7 @@ const buildRecentOrdersChunk = async (userId, limit = 4) => {
     const orders = await Order.find({ user: userId })
         .sort({ date_created_utc: -1 })
         .limit(limit)
-        .select("customOrderId orderStatus paymentStatus orderTotal totalItems date_created_utc alibaba1688.status alibaba1688.primary_order_id")
+        .select("customOrderId orderStatus paymentStatus orderTotal totalItems date_created_utc line_items offerId alibaba1688.status alibaba1688.primary_order_id")
         .lean();
 
     if (!orders.length) {
@@ -66,8 +67,12 @@ const buildRecentOrdersChunk = async (userId, limit = 4) => {
             `Status: ${order.orderStatus}`,
             `Payment: ${order.paymentStatus}`,
             `Total: ${order.orderTotal}`,
-            `Items: ${order.totalItems || 0}`,
+            `Items: ${order.totalItems || normalizeOrderLineItems(order.line_items).length || 0}`,
         ];
+        const lineSummary = buildOrderLineItemsText(order);
+        if (lineSummary) {
+            parts.push(lineSummary.replace(/\n/g, " ; "));
+        }
         if (order.alibaba1688?.status) parts.push(`1688 status: ${order.alibaba1688.status}`);
         if (order.alibaba1688?.primary_order_id) {
             parts.push(`1688 ID: ${order.alibaba1688.primary_order_id}`);

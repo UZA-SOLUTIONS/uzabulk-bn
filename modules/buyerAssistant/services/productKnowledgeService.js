@@ -1,5 +1,4 @@
-const { isValidObjectId } = require("../../../validators/validator");
-const Product = require("../../../models/productsTable");
+const { buildProductCard } = require("./assistantEnrichmentService");
 const {
     withTimeout,
     isFastMode,
@@ -8,7 +7,18 @@ const {
 } = require("./buyerAssistantUtils");
 
 const PRODUCT_SELECT =
-    "name slug price compare_price short_description description status stock_status min_order_qty price_tiers offerId sku average_rating rating_count sold_count supplier_rating categories";
+    "name slug price compare_price short_description description status stock_status min_order_qty price_tiers offerId sku average_rating rating_count sold_count supplier_rating categories featured_image images";
+
+const populateProductMedia = async (docs = []) => {
+    const list = Array.isArray(docs) ? docs : [docs];
+    if (!list.length) return list;
+    try {
+        await Product.populate(list, { path: "featured_image", select: "link -_id" });
+    } catch {
+        // optional
+    }
+    return list;
+};
 
 const extractProductRef = (text = "") => {
     const sample = String(text || "");
@@ -65,25 +75,31 @@ const buildProductChunkFromDoc = (product, score = 1) => {
         text: lines.join("\n"),
         score,
         productId: String(product._id),
+        productCard: buildProductCard(product),
     };
 };
 
 const fetchProductByRef = async (ref) => {
     if (!ref?.value) return null;
+    let product = null;
     if (ref.type === "id" && isValidObjectId(ref.value)) {
-        return Product.findById(ref.value).select(PRODUCT_SELECT).lean();
-    }
-    if (ref.type === "offerId") {
-        return Product.findOne({ offerId: String(ref.value), status: "active" })
+        product = await Product.findById(ref.value).select(PRODUCT_SELECT).lean();
+    } else if (ref.type === "offerId") {
+        product = await Product.findOne({ offerId: String(ref.value), status: "active" })
             .select(PRODUCT_SELECT)
             .lean();
     }
-    return null;
+    if (!product) return null;
+    await populateProductMedia(product);
+    return product;
 };
 
 const fetchProductById = async (productId) => {
     if (!productId || !isValidObjectId(productId)) return null;
-    return Product.findById(productId).select(PRODUCT_SELECT).lean();
+    const product = await Product.findById(productId).select(PRODUCT_SELECT).lean();
+    if (!product) return null;
+    await populateProductMedia(product);
+    return product;
 };
 
 const searchProductsByNameNeedle = async (query, limit = 3) => {
@@ -94,7 +110,7 @@ const searchProductsByNameNeedle = async (query, limit = 3) => {
     const phrase = words.length >= 2 ? words.slice(-2).join(" ") : needle.slice(0, 48);
 
     try {
-        return await Product.find({
+        const items = await Product.find({
             status: "active",
             name: { $regex: phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" },
         })
@@ -102,6 +118,8 @@ const searchProductsByNameNeedle = async (query, limit = 3) => {
             .sort({ sold_count: -1, average_rating: -1 })
             .limit(limit)
             .lean();
+        await populateProductMedia(items);
+        return items;
     } catch {
         return [];
     }

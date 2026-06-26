@@ -7,6 +7,7 @@ const {
     resolveIdentity,
 } = require("../services/recommendationEngineService");
 const { publishRecommendationEvent } = require("../services/eventStreamService");
+const { trackProductBehavior } = require("../../products/services/recommendationService");
 const { isMongoConnected } = require("../../../config/db");
 const { withPromiseTimeout } = require("../../../utils/mongoQueryOptions");
 const { isImageSearchBusy } = require("../../../utils/imageSearchGate");
@@ -220,6 +221,24 @@ module.exports = {
                     city,
                     client: true,
                 },
+            });
+
+            void trackProductBehavior(req, {
+                productId,
+                eventType,
+                search,
+                metadata: {
+                    page,
+                    dwellTimeMs,
+                    scrollDepth,
+                    filters,
+                    category,
+                    country,
+                    city,
+                    client: true,
+                },
+            }).catch((err) => {
+                console.warn("trackProductBehavior from engagement failed:", err?.message);
             });
 
             return res.success("EVENT_RECORDED", { recorded: true });

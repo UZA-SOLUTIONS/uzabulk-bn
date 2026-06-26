@@ -6,6 +6,11 @@ const FAQ = require("../../../models/faqTable");
 const tradePolicies = require("../knowledge/tradePolicies");
 const { buildBuyerContextChunks, buildCartChunk } = require("./buyerContextService");
 const { resolveProductChunksForQuery } = require("./productKnowledgeService");
+const {
+    buildOrderLineItemsText,
+    buildOrderLineItemsChunk,
+    buildOrderProductChunks,
+} = require("./orderKnowledgeService");
 const { withTimeout, isFastMode, retrievalTimeoutMs } = require("./buyerAssistantUtils");
 
 const TOP_K = () => Number(process.env.BUYER_ASSISTANT_RAG_TOP_K || 6);
@@ -103,9 +108,11 @@ const buildOrderChunk = async (order) => {
         `Status: ${order.orderStatus}`,
         `Payment: ${order.paymentStatus}`,
         `Total: ${order.orderTotal}`,
-        `Items: ${order.totalItems || 0}`,
+        `Subtotal: ${order.subTotal ?? ""}`,
+        `Delivery fee: ${order.deliveryFee ?? ""}`,
+        `Items: ${order.totalItems || ""}`,
         `Created: ${order.date_created_utc || order.date_created || ""}`,
-    ];
+    ].filter((line) => !line.endsWith(": ") && !line.endsWith(": undefined"));
 
     const ali = order.alibaba1688 || {};
     if (ali.status) lines.push(`1688 status: ${ali.status}`);
@@ -122,11 +129,16 @@ const buildOrderChunk = async (order) => {
         }
     }
 
+    const lineItemsText = buildOrderLineItemsText(order);
+    if (lineItemsText) {
+        lines.push(lineItemsText);
+    }
+
     return {
         source: "order_history",
         title: `Order ${order.customOrderId || order._id}`,
         text: lines.join("\n"),
-        score: 2,
+        score: 2.2,
         orderId: String(order._id),
     };
 };
@@ -149,7 +161,7 @@ const retrieveKnowledge = async ({
     limit,
 } = {}) => {
     const run = async () => {
-        const effectiveLimit = limit || TOP_K();
+        const effectiveLimit = limit || Math.max(TOP_K(), order || latestOrderProductChunks.length ? 10 : TOP_K());
         const orderRef = explicitOrderRef || extractOrderRef(query);
         const chunks = [];
 
@@ -172,10 +184,30 @@ const retrieveKnowledge = async ({
             loadFaqs(),
         ]);
 
+        let latestOrderProductChunks = [];
+        if (userId && !order && /order|ordered|purchase|bought|my items|what did i/i.test(String(query || ""))) {
+            const latestOrder = await Order.findOne({ user: userId })
+                .sort({ date_created_utc: -1 })
+                .select("customOrderId line_items orderStatus orderTotal date_created_utc")
+                .lean();
+            if (latestOrder) {
+                latestOrderProductChunks = await buildOrderProductChunks(latestOrder);
+            }
+        }
+
         const orderChunk = await buildOrderChunk(order);
         if (orderChunk) chunks.push(orderChunk);
+
+        if (order) {
+            const lineItemsChunk = buildOrderLineItemsChunk(order);
+            if (lineItemsChunk) chunks.push(lineItemsChunk);
+            const orderProductChunks = await buildOrderProductChunks(order);
+            chunks.push(...orderProductChunks);
+        }
+
         chunks.push(...buyerChunks);
         chunks.push(...productChunks);
+        chunks.push(...latestOrderProductChunks);
 
         const policyChunks = rankStaticChunks(query, queryVector, tradePolicies, isFastMode() ? 2 : 3);
         chunks.push(...policyChunks);
@@ -205,6 +237,7 @@ const retrieveKnowledge = async ({
             chunks: deduped,
             orderRef: orderRef || null,
             orderFound: Boolean(order),
+            orderId: order?._id ? String(order._id) : null,
             productId: productId || null,
             isLoggedIn: Boolean(userId),
         };

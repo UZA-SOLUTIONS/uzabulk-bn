@@ -15,8 +15,8 @@ const { searchLocalImage, searchLocalImageLive } = require('../services/localIma
 const { updateProductDetails } = require('../helper/migration');
 const {
     getRecommendedProducts,
-    getRotatedProductPage,
-    getHomeBrowseProductPage,
+    getPersonalizedProductPage,
+    getPersonalizedNewArrivalsPage,
     buildCatalogSeedKey,
     trackProductBehavior,
 } = require('../services/recommendationService');
@@ -513,15 +513,15 @@ module.exports = {
             if (!search && !category) {
                 const catalogPage = Math.max(1, Number(req.query.skip) || 1);
                 const seedKey = `${buildCatalogSeedKey(req, refresh)}:arrivals`;
-                const rotated = await getRotatedProductPage({
+                const personalized = await getPersonalizedNewArrivalsPage(req, {
                     limit,
                     page: catalogPage,
-                    category: null,
                     seedKey,
+                    refresh,
                 });
-                items = rotated.items;
-                hasMore = rotated.hasMore;
-                total = rotated.total;
+                items = personalized.items;
+                hasMore = personalized.hasMore;
+                total = personalized.total;
             } else {
                 try {
                     const { items: rawItems, total: esTotal } = unwrapEsSearchResult(
@@ -662,32 +662,37 @@ module.exports = {
 
             if (!item) {
                 return res.error("INVALID_PRODUCT_ID");
-            };
-
-            item = processVariations(item);
-            item = await enrichProductReviewsAndRatings(item);
-
-            const [similarProducts] = await Promise.all([
-                getSimilarProducts(productId, { limit: 8 }).catch(() => []),
-                ensureProductEmbedding(productId).catch((err) => {
-                    console.warn(`Embedding warmup failed for ${productId}:`, err?.message);
-                }),
-            ]);
-
-            if (similarProducts.length) {
-                item.similar_products = similarProducts;
-                item.related_products = similarProducts;
-                ensureRelatedProducts(productId, { limit: 8 }).catch((err) => {
-                    console.warn(`Related products persist failed for ${productId}:`, err?.message);
-                });
             }
 
+            item = processVariations(item);
+            item = await withPromiseTimeout(
+                enrichProductReviewsAndRatings(item),
+                5000,
+                item
+            );
+
             await priceExchange(item, req.exchangeRate);
-            await trackProductBehavior(req, {
+
+            void trackProductBehavior(req, {
                 product: item,
                 eventType: "view",
                 score: 1,
             });
+
+            void getSimilarProducts(productId, { limit: 8 })
+                .then((similarProducts) => {
+                    if (!similarProducts?.length) return;
+                    ensureRelatedProducts(productId, { limit: 8 }).catch((err) => {
+                        console.warn(`Related products persist failed for ${productId}:`, err?.message);
+                    });
+                })
+                .catch((err) => {
+                    console.warn(`[products] similar products skipped for ${productId}:`, err?.message);
+                });
+            void ensureProductEmbedding(productId).catch((err) => {
+                console.warn(`Embedding warmup failed for ${productId}:`, err?.message);
+            });
+
             return res.success(item);
 
         } catch (error) {
@@ -774,16 +779,18 @@ module.exports = {
             if (useRotatedBrowse) {
                 const catalogPage = Math.max(1, Number(req.query.skip) || 1);
                 const seedKey = `${buildCatalogSeedKey(req, refresh)}:browse`;
-                const rotated = await getHomeBrowseProductPage({
+                const personalized = await getPersonalizedProductPage(req, {
                     limit,
                     page: catalogPage,
                     seedKey,
+                    refresh,
                 });
                 const categoryData = null;
-                await priceExchange(rotated.items, req.exchangeRate);
-                return res.success(req.nextPageOptions(rotated.items, rotated.total, {
+                await priceExchange(personalized.items, req.exchangeRate);
+                return res.success(req.nextPageOptions(personalized.items, personalized.total, {
                     category: categoryData,
-                    hasMore: rotated.hasMore,
+                    hasMore: personalized.hasMore,
+                    personalized: true,
                 }));
             }
 
@@ -1163,7 +1170,11 @@ module.exports = {
             const thumbConcurrency = CATEGORY_THUMBNAIL_CONCURRENCY;
             await mapPool(uniqueIds, thumbConcurrency, async (categoryId) => {
                 try {
-                    const url = await fetchCategoryThumbnailUrl(categoryId, refresh);
+                    const url = await withPromiseTimeout(
+                        fetchCategoryThumbnailUrl(categoryId, refresh),
+                        5000,
+                        ""
+                    );
                     if (url) result[categoryId] = url;
                 } catch (err) {
                     console.warn(`categoryThumbnails failed for ${categoryId}:`, err.message);

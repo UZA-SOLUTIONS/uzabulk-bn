@@ -8,6 +8,10 @@ const { generateBuyerResponse } = require("./responseGenerationService");
 const { assessDisputeRisk } = require("./disputeDetectionService");
 const { displayName } = require("./buyerContextService");
 const {
+    extractProductCards,
+    buildAssistantActions,
+} = require("./assistantEnrichmentService");
+const {
     withTimeout,
     embeddingsEnabled,
     embedTimeoutMs,
@@ -124,6 +128,7 @@ const handleBuyerChat = async (req, body = {}) => {
             language,
             chunks: retrieval.chunks,
             conversationHistory: history,
+            isLoggedIn: Boolean(userId),
         });
     } else {
         generation.answer = retrieval.chunks.length
@@ -139,14 +144,25 @@ const handleBuyerChat = async (req, body = {}) => {
         answer = `${answer}\n\n${escalationNote[language] || escalationNote.en}`;
     }
 
+    const products = extractProductCards(retrieval.chunks);
+    const actions = buildAssistantActions({
+        message,
+        retrieval,
+        products,
+        isLoggedIn: Boolean(userId),
+    });
+
     const assistantMeta = {
         sources: generation.sources,
         chunks: retrieval.chunks.map((c) => ({ source: c.source, title: c.title })),
         orderRef: retrieval.orderRef,
         orderFound: retrieval.orderFound,
+        orderId: retrieval.orderId || null,
         model: generation.model,
         riskScore: risk.score,
         riskReasons: risk.reasons,
+        products,
+        actions,
     };
 
     session.messages.push(
@@ -158,6 +174,8 @@ const handleBuyerChat = async (req, body = {}) => {
             dispute_flag,
             status: generation.status,
             metadata: assistantMeta,
+            products,
+            actions,
             date_created_utc: new Date(),
         }
     );
@@ -179,6 +197,8 @@ const handleBuyerChat = async (req, body = {}) => {
         dispute_flag,
         escalated: risk.escalate,
         sources: assistantMeta.chunks,
+        products,
+        actions,
         welcome: welcomeMessages[language] || welcomeMessages.en,
     };
 

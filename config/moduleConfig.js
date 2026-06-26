@@ -83,6 +83,13 @@ const moduleConfig = [
         "route": true,
         "routeName": "buyer-assistant"
     },
+    {
+        "type": "i18n",
+        "apiVersion": "v1",
+        "status": true,
+        "route": true,
+        "routeName": "i18n"
+    },
 ]
 
 module.exports = moduleConfig;
