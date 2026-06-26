@@ -78,4 +78,24 @@ module.exports = {
             console.error(`Error updating alias '${aliasName}' -> '${indexName}':`, error);
         }
     },
+
+    countDocuments: async (index) => {
+        try {
+            const res = await esClient.count({ index });
+            return Number(res?.count) || 0;
+        } catch (error) {
+            console.error(`Error counting index '${index}':`, error?.message || error);
+            return 0;
+        }
+    },
+
+    getMaxDocumentId: async (index) => {
+        // ES 8+ disallows sorting on _id (fielddata). Callers should use Mongo cursor inference instead.
+        const count = await module.exports.countDocuments(index);
+        if (!count) return "";
+        console.warn(
+            `getMaxDocumentId: cannot sort _id in ES (${count} docs in '${index}'). Use checkpoint or Mongo inference.`
+        );
+        return "";
+    },
 };

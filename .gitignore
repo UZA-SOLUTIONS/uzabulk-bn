@@ -28,3 +28,4 @@ gcloud-application-credentials.json
 .DS_Store
 Thumbs.db
 public/images/*
+scripts/.reindex-products-state.json

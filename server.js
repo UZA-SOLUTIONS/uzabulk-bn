@@ -72,6 +72,15 @@ const startServer = async () => {
         `1688 catalog sync job not started: ${jobErr.message}`
       );
     }
+    try {
+      const { startEsProductSyncJob } = require("./jobs/esProductSyncJob");
+      startEsProductSyncJob();
+    } catch (jobErr) {
+      logger.warn(
+        { apiModule: "server", apiHandler: "server.js" },
+        `ES product sync job not started: ${jobErr.message}`
+      );
+    }
   });
 };
 

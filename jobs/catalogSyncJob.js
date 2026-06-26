@@ -2,6 +2,7 @@ const Product = require("../models/productsTable");
 const { getProductDetail } = require("../modules/products/services/alibaba");
 const { updateProductDetails } = require("../modules/products/helper/migration");
 const { isImageSearchBusy } = require("../utils/imageSearchGate");
+const { scheduleEsProductSyncAfterCatalog } = require("./esProductSyncJob");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ENABLED = String(process.env.ALIBABA_CATALOG_SYNC_JOB_ENABLED || "true").toLowerCase() !== "false";
@@ -60,6 +61,10 @@ const runCatalogSyncJob = async () => {
         console.log(
             `[1688-catalog-sync] Done in ${Date.now() - started}ms — synced=${synced}/${products.length}`
         );
+
+        if (synced > 0) {
+            scheduleEsProductSyncAfterCatalog();
+        }
     } catch (error) {
         console.error("[1688-catalog-sync] Failed:", error.message);
     } finally {
