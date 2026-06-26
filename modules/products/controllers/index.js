@@ -170,16 +170,77 @@ const getCategoryRepresentativeSkip = (categoryId, refresh = "", poolSize = 8) =
 
 const pickProductImageUrl = (product) => {
     if (!product) return "";
-    if (typeof product?.featured_image === "string" && product.featured_image.trim()) {
-        return product.featured_image.trim();
+    const candidates = [
+        product.featured_image,
+        product.image,
+        product.imageUrl,
+        product.thumbnail,
+        ...(Array.isArray(product.images) ? product.images : []),
+    ];
+    for (const candidate of candidates) {
+        if (typeof candidate === "string" && candidate.trim()) {
+            return candidate.trim();
+        }
+        if (candidate?.link) {
+            return String(candidate.link).trim();
+        }
+        if (candidate?.url) {
+            return String(candidate.url).trim();
+        }
     }
-    if (product?.featured_image?.link) {
-        return String(product.featured_image.link).trim();
-    }
-    const first = Array.isArray(product?.images) ? product.images[0] : null;
-    if (typeof first === "string" && first.trim()) return first.trim();
-    if (first?.link) return String(first.link).trim();
     return "";
+};
+
+const hydrateAutocompleteImages = async (items = []) => {
+    if (!Array.isArray(items) || !items.length) return [];
+
+    const normalized = normalizeFeaturedImageLink(items);
+    const missing = normalized.filter((item) => !pickProductImageUrl(item));
+    if (!missing.length) return normalized;
+
+    const mongoIds = [...new Set(
+        missing.map((item) => String(item?._id || "").trim()).filter(looksLikeObjectId)
+    )];
+    const offerIds = [...new Set(
+        missing.map((item) => String(item?.offerId || "").trim()).filter(Boolean)
+    )];
+
+    if (!mongoIds.length && !offerIds.length) return normalized;
+
+    const orQuery = [];
+    if (mongoIds.length) orQuery.push({ _id: { $in: mongoIds } });
+    if (offerIds.length) orQuery.push({ offerId: { $in: offerIds } });
+
+    const fromDb = await _model.Product.find({
+        status: "active",
+        $or: orQuery,
+    })
+        .select({ _id: 1, offerId: 1, featured_image: 1, images: 1 })
+        .lean();
+
+    const byId = new Map(fromDb.map((product) => [String(product._id), product]));
+    const byOffer = new Map(
+        fromDb.filter((product) => product.offerId).map((product) => [String(product.offerId), product])
+    );
+
+    return normalized.map((item) => {
+        if (pickProductImageUrl(item)) return item;
+
+        const id = String(item?._id || "").trim();
+        const offer = String(item?.offerId || "").trim();
+        const record =
+            (looksLikeObjectId(id) && byId.get(id))
+            || (offer && byOffer.get(offer))
+            || null;
+        if (!record) return item;
+
+        const url = pickProductImageUrl(record);
+        return {
+            ...item,
+            featured_image: url || item.featured_image,
+            images: record.images?.length ? record.images : item.images,
+        };
+    });
 };
 
 const resolveCategoryIconUrl = async (categoryId) => {
@@ -454,7 +515,9 @@ module.exports = {
                 fast: true,
                 skipExternal: true,
             });
-            const items = visibleCatalogItems(normalizeFeaturedImageLink(aiSearch.items || []));
+            const items = visibleCatalogItems(
+                await hydrateAutocompleteImages(aiSearch.items || [])
+            );
 
             return res.success("RECORD_FOUND", items, {
                 searchMeta: aiSearch.searchMeta || {
