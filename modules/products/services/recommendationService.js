@@ -7,15 +7,24 @@ const ProductBehavior = require("../../../models/productBehaviorTable");
 const { isMongoConnected } = require("../../../config/db");
 const { withPromiseTimeout } = require("../../../utils/mongoQueryOptions");
 const {
-    expandCategoryFilterIds,
-    buildMongoCategoryMatch,
-} = require("./categoryFilterHelper");
+    getRotatedProducts,
+    getPaginatedCatalogPage,
+    dedupeProductList,
+    populateProductCards,
+    getSeedNumber,
+    fetchUsableProducts,
+} = require("./catalogRotationService");
+const { filterCatalogProducts, usableCatalogSort } = require("../helpers/catalogVisibilityHelper");
 const {
     applyEmbeddingBoost,
     getEmbeddingDiscoveryProducts,
 } = require("./aiRecommendationService");
 const { getPersonalizedSurface } = require("../../recommendations/services/recommendationEngineService");
 const { publishRecommendationEvent } = require("../../recommendations/services/eventStreamService");
+const {
+    diversifyByCategory,
+    getRecentBrowsedProducts,
+} = require("../../recommendations/services/feedMixService");
 
 const DEFAULT_LIMIT = 24;
 const PERSONALIZED_BROWSE_TIMEOUT_MS = Math.min(
@@ -55,27 +64,6 @@ const pythonEventWeights = {
 
 const buyIntentEvents = new Set(["add_to_cart", "update_cart", "checkout", "order"]);
 
-const productProjection = {
-    name: 1,
-    price: 1,
-    bestSeller: 1,
-    compare_price: 1,
-    images: 1,
-    featured_image: 1,
-    average_rating: 1,
-    rating_count: 1,
-    short_description: 1,
-    manage_stock: 1,
-    stock_quantity: 1,
-    stock_status: 1,
-    isFeatured: 1,
-    date_created_utc: 1,
-    featureAttribute: 1,
-    offerId: 1,
-    categories: 1,
-    sold_count: 1,
-};
-
 const getIdentityQuery = (req) => {
     const or = [];
     if (req?.user?._id) {
@@ -87,16 +75,6 @@ const getIdentityQuery = (req) => {
         or.push({ deviceId });
     }
     return or.length ? { $or: or } : null;
-};
-
-const getSeedNumber = (value = "") => {
-    const input = String(value || "");
-    let hash = 0;
-    for (let index = 0; index < input.length; index += 1) {
-        hash = ((hash << 5) - hash) + input.charCodeAt(index);
-        hash |= 0;
-    }
-    return Math.abs(hash);
 };
 
 /** Mirrors `tokens()` in recommend_products.py */
@@ -165,63 +143,6 @@ const trackProductBehavior = async (req, {
     }
 };
 
-const dedupeProductList = (products = []) => {
-    const seen = new Set();
-    const unique = [];
-    products.forEach((product) => {
-        const key = String(product?._id || product?.id || product?.offerId || "").trim();
-        if (!key || seen.has(key)) return;
-        seen.add(key);
-        unique.push(product);
-    });
-    return unique;
-};
-
-const getRotatedProducts = async ({
-    limit = DEFAULT_LIMIT,
-    category = null,
-    seedKey = "",
-    mixedCategoriesOnly = false,
-    excludeMixedCategories = false,
-    allowFill = true,
-} = {}) => {
-    const match = { status: "active" };
-    if (category) {
-        const categoryIds = await expandCategoryFilterIds(category);
-        const categoryMatch = buildMongoCategoryMatch(categoryIds);
-        if (categoryMatch) Object.assign(match, categoryMatch);
-    }
-    if (mixedCategoriesOnly) {
-        match.$expr = { $gte: [{ $size: "$categories" }, 2] };
-    } else if (excludeMixedCategories) {
-        match.$expr = { $eq: [{ $size: "$categories" }, 1] };
-    }
-    const safeLimit = Math.max(Number(limit) || DEFAULT_LIMIT, DEFAULT_LIMIT);
-    const offset = getSeedNumber(`${seedKey}:${category || "all"}`) % 500;
-
-    let products = await populateProductCards(
-        Product.find(match)
-            .sort({ date_created_utc: -1, _id: -1 })
-            .skip(offset)
-            .limit(safeLimit)
-    );
-
-    if (allowFill && products.length < safeLimit && offset > 0) {
-        const fillProducts = await populateProductCards(
-            Product.find(match)
-                .sort({ date_created_utc: -1, _id: -1 })
-                .limit(safeLimit - products.length)
-        );
-        const seen = new Set(products.map((product) => String(product._id)));
-        products = [
-            ...products,
-            ...fillProducts.filter((product) => !seen.has(String(product._id))),
-        ];
-    }
-
-    return dedupeProductList(products);
-};
-
 const buildCatalogSeedKey = (req, refresh = "") => {
     const rawDevice = req?.deviceId ?? req?.headers?.deviceid;
     const deviceId = rawDevice != null && String(rawDevice).trim() ? String(rawDevice).trim() : "";
@@ -245,52 +166,19 @@ const resolveCatalogPage = (page, legacySkip) => {
     return 1;
 };
 
-const getRotatedProductPage = async ({ limit, page = 1, skip, category = null, seedKey = "" } = {}) => {
-    const safeLimit = Math.max(1, Math.min(Number(limit) || DEFAULT_LIMIT, 64));
-    const safePage = resolveCatalogPage(page, skip);
-    const poolSize = Math.min(280, safePage * safeLimit + safeLimit + 32);
-    const pool = await getRotatedProducts({ limit: poolSize, category, seedKey });
-    const start = (safePage - 1) * safeLimit;
-    const items = pool.slice(start, start + safeLimit);
-    const hasMore = start + safeLimit < pool.length;
-    return {
-        items,
-        hasMore,
-        total: hasMore ? start + items.length + 1 : start + items.length,
-    };
-};
+const getRotatedProductPage = async ({ limit, page = 1, skip, category = null, seedKey = "" } = {}) => (
+    getPaginatedCatalogPage({
+        limit,
+        page: resolveCatalogPage(page, skip),
+        category,
+        seedKey,
+    })
+);
 
-/** Home / all-products listing: paginate the full active catalog (no capped pool). */
-const getHomeBrowseProductPage = async ({ limit, page = 1, skip, seedKey = "" } = {}) => {
-    const safeLimit = Math.max(1, Math.min(Number(limit) || DEFAULT_LIMIT, 100));
-    const safePage = resolveCatalogPage(page, skip);
-    const match = { status: "active" };
-    const baseOffset = getSeedNumber(`${seedKey}:all`) % 500;
-    const pageOffset = baseOffset + (safePage - 1) * safeLimit;
-
-    let products = await populateProductCards(
-        Product.find(match)
-            .sort({ date_created_utc: -1, _id: -1 })
-            .skip(pageOffset)
-            .limit(safeLimit + 1)
-    );
-
-    const fetchedCount = products.length;
-    products = dedupeProductList(products);
-    const hasMore = fetchedCount > safeLimit;
-    const items = products.slice(0, safeLimit);
-
-    return {
-        items,
-        hasMore,
-        total: hasMore ? pageOffset + items.length + 1 : pageOffset + items.length,
-    };
-};
-
-const populateProductCards = (query) => query
-    .select(productProjection)
-    .populate({ path: "featured_image", select: "link -_id" })
-    .lean();
+/** Home / all-products listing: paginate with seed-based rotation. */
+const getHomeBrowseProductPage = async ({ limit, page = 1, skip, seedKey = "" } = {}) => (
+    getRotatedProductPage({ limit, page, skip, seedKey, category: null })
+);
 
 const getPreferredCategoryIds = (behaviors = []) => {
     const scores = new Map();
@@ -308,7 +196,7 @@ const getPreferredCategoryIds = (behaviors = []) => {
     });
     return [...scores.entries()]
         .sort((a, b) => b[1] - a[1])
-        .slice(0, 8)
+        .slice(0, 4)
         .map(([categoryId]) => categoryId);
 };
 
@@ -316,18 +204,19 @@ const getCandidateProducts = async ({ behaviors = [], limit = 250, category = nu
     const preferredCategoryIds = category ? [category] : getPreferredCategoryIds(behaviors);
     const products = [];
     const seen = new Set();
+    const preferredShare = category ? limit : Math.min(Math.floor(limit * 0.35), 40);
 
     if (preferredCategoryIds.length) {
         const relatedOffset = getSeedNumber(`${seedKey}:${preferredCategoryIds.join(",")}`) % 60;
-        const related = await populateProductCards(
+        const related = filterCatalogProducts(await populateProductCards(
             Product.find({
                 status: "active",
                 categories: { $in: preferredCategoryIds },
             })
                 .sort({ average_rating: -1, sold_count: -1, date_created_utc: -1 })
                 .skip(relatedOffset)
-                .limit(limit)
-        );
+                .limit(preferredShare)
+        ));
         related.forEach((product) => {
             const key = String(product._id);
             if (seen.has(key)) return;
@@ -337,7 +226,7 @@ const getCandidateProducts = async ({ behaviors = [], limit = 250, category = nu
     }
 
     if (products.length < limit) {
-        const rotated = await getRotatedProducts({ limit: limit - products.length, category, seedKey });
+        const rotated = await getRotatedProducts({ limit: limit - products.length, category: null, seedKey });
         rotated.forEach((product) => {
             const key = String(product._id);
             if (seen.has(key)) return;
@@ -465,7 +354,7 @@ const scoreInNode = (behaviors = [], candidates = []) => {
         score += (item.categories || []).reduce(
             (sum, cat) => sum + (categoryScores.get(String(cat)) || 0),
             0
-        ) * 2.2;
+        ) * 0.9;
         score += tokenizeForScore(item.name).reduce(
             (sum, tok) => sum + (tokenScores.get(tok) || 0),
             0
@@ -513,6 +402,10 @@ const usePythonRecommender = () =>
     process.env.RECOMMENDER_USE_PYTHON === "1"
     || process.env.RECOMMENDER_USE_PYTHON === "true";
 
+const finalizeHomeRecommendations = (products, limit) => (
+    filterCatalogProducts(diversifyByCategory(products, { maxPerCategory: 3, limit })).slice(0, limit)
+);
+
 const getRecommendedProducts = async (req, options = {}) => {
     const limit = Math.max(1, Math.min(Number(options.limit) || DEFAULT_LIMIT, 100));
     const category = options.category || null;
@@ -525,7 +418,7 @@ const getRecommendedProducts = async (req, options = {}) => {
                 contextKey: String(options.refresh || options.contextKey || "").slice(0, 80),
             });
             if (result.items?.length) {
-                return result.items.slice(0, limit);
+                return filterCatalogProducts(result.items).slice(0, limit);
             }
         } catch (error) {
             console.warn("Personalized homepage feed failed, using legacy recommender:", error.message);
@@ -566,15 +459,15 @@ const getRecommendedProducts = async (req, options = {}) => {
     if (!behaviors.length) {
         const discovered = await getEmbeddingDiscoveryProducts({ limit, seedKey });
         if (discovered.length) {
-            return discovered.slice(0, limit);
+            return finalizeHomeRecommendations(discovered, limit);
         }
-        return rotatedProducts.slice(0, limit);
+        return finalizeHomeRecommendations(rotatedProducts, limit);
     }
 
     if (!usePythonRecommender()) {
         const ranked = scoreInNode(behaviors, rotatedProducts);
         const boosted = await applyEmbeddingBoost(ranked, behaviors);
-        return boosted.slice(0, limit);
+        return finalizeHomeRecommendations(boosted, limit);
     }
 
     const payload = {
@@ -605,12 +498,12 @@ const getRecommendedProducts = async (req, options = {}) => {
         }
         const merged = mergeOrderedWithPool(rawIds, rotatedProducts, limit);
         const boosted = await applyEmbeddingBoost(merged, behaviors);
-        return boosted.slice(0, limit);
+        return finalizeHomeRecommendations(boosted, limit);
     } catch (error) {
         console.warn("Python recommender unavailable, using Node fallback:", error.message);
         const ranked = scoreInNode(behaviors, rotatedProducts);
         const boosted = await applyEmbeddingBoost(ranked, behaviors);
-        return boosted.slice(0, limit);
+        return finalizeHomeRecommendations(boosted, limit);
     }
 };
 
@@ -625,14 +518,20 @@ const getPersonalizedProductPage = async (req, { limit, page = 1, skip, seedKey 
     const safeLimit = Math.max(1, Math.min(Number(limit) || DEFAULT_LIMIT, 100));
     const safePage = resolveCatalogPage(page, skip);
     const compositeSeed = seedKey || `${buildCatalogSeedKey(req, refresh)}:browse`;
+    const recentBrowsed = req?.user?._id
+        ? await getRecentBrowsedProducts(req, { limit: 12 })
+        : [];
+    const recentIds = new Set(recentBrowsed.map((product) => String(product._id)));
 
     if (safePage > 1) {
-        return getHomeBrowseProductPage({ limit: safeLimit, page: safePage, seedKey: compositeSeed });
+        const pageResult = await getHomeBrowseProductPage({ limit: safeLimit, page: safePage, seedKey: compositeSeed });
+        return { ...pageResult, recentBrowsed: [] };
     }
 
     const hasHistory = await userHasBrowsingHistory(req);
     if (!hasHistory) {
-        return getHomeBrowseProductPage({ limit: safeLimit, page: safePage, seedKey: compositeSeed });
+        const pageResult = await getHomeBrowseProductPage({ limit: safeLimit, page: safePage, seedKey: compositeSeed });
+        return { ...pageResult, recentBrowsed };
     }
 
     const pool = await withPromiseTimeout(
@@ -645,16 +544,22 @@ const getPersonalizedProductPage = async (req, { limit, page = 1, skip, seedKey 
     );
 
     if (Array.isArray(pool) && pool.length) {
-        const items = pool.slice(0, safeLimit);
-        const hasMore = pool.length > safeLimit;
+        const mixed = filterCatalogProducts(diversifyByCategory(
+            pool.filter((product) => !recentIds.has(String(product._id))),
+            { maxPerCategory: 3, limit: safeLimit }
+        ));
+        const items = mixed.slice(0, safeLimit);
+        const hasMore = pool.length > safeLimit || mixed.length > safeLimit;
         return {
             items,
             hasMore,
             total: hasMore ? items.length + 1 : items.length,
+            recentBrowsed,
         };
     }
 
-    return getHomeBrowseProductPage({ limit: safeLimit, page: safePage, seedKey: compositeSeed });
+    const pageResult = await getHomeBrowseProductPage({ limit: safeLimit, page: safePage, seedKey: compositeSeed });
+    return { ...pageResult, recentBrowsed };
 };
 
 const getPersonalizedNewArrivalsPage = async (req, { limit, page = 1, skip, seedKey = "", refresh = "" } = {}) => {
@@ -690,15 +595,15 @@ const getPersonalizedNewArrivalsPage = async (req, { limit, page = 1, skip, seed
 
     let candidates = [];
     if (preferredCategoryIds.length) {
-        candidates = await populateProductCards(
+        candidates = filterCatalogProducts(await populateProductCards(
             Product.find({
                 status: "active",
                 categories: { $in: preferredCategoryIds },
             })
-                .sort({ date_created_utc: -1, _id: -1 })
+                .sort(usableCatalogSort)
                 .skip(relatedOffset)
                 .limit(poolLimit)
-        );
+        ));
     }
 
     if (candidates.length < poolLimit) {
@@ -716,7 +621,7 @@ const getPersonalizedNewArrivalsPage = async (req, { limit, page = 1, skip, seed
         });
     }
 
-    const ranked = scoreInNode(behaviors, dedupeProductList(candidates));
+    const ranked = filterCatalogProducts(scoreInNode(behaviors, dedupeProductList(candidates)));
     const start = (safePage - 1) * safeLimit;
     const items = ranked.slice(start, start + safeLimit);
     const hasMore = start + safeLimit < ranked.length;
@@ -737,4 +642,5 @@ module.exports = {
     getPersonalizedProductPage,
     getPersonalizedNewArrivalsPage,
     buildCatalogSeedKey,
+    getRecentBrowsedProducts,
 };

@@ -1,4 +1,5 @@
 const { buildProductCard } = require("./assistantEnrichmentService");
+const { isRestrictedCatalogProduct } = require("../../products/helpers/catalogVisibilityHelper");
 const {
     withTimeout,
     isFastMode,
@@ -137,6 +138,7 @@ const resolveProductChunksForQuery = async ({
     const cap = Math.min(Math.max(Number(limit) || 3, 1), 4);
 
     const ingest = (product, score) => {
+        if (isRestrictedCatalogProduct(product)) return;
         const chunk = buildProductChunkFromDoc(product, score);
         if (!chunk) return;
         const key = chunk.productId || chunk.title;

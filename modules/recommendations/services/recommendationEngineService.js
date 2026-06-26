@@ -10,8 +10,10 @@ const { scoreCollaborativeCandidates } = require("./collaborativeFilterService")
 const { rankCandidates } = require("./personalizedRankingService");
 const { getSimilarProducts } = require("../../products/services/similarProductsService");
 const { getEmbeddingDiscoveryProducts } = require("../../products/services/aiRecommendationService");
-const { getRotatedProducts } = require("../../products/services/recommendationService");
+const { getRotatedProducts } = require("../../products/services/catalogRotationService");
+const { filterCatalogProducts } = require("../../products/helpers/catalogVisibilityHelper");
 const { cosineSimilarity } = require("../../ai/services/embeddingService");
+const { diversifyByCategory } = require("./feedMixService");
 
 const SURFACE_LIMITS = {
     homepage_feed: 12,
@@ -117,25 +119,32 @@ const buildCandidatePool = async (signals = {}, { limit = 80, cartProductIds = [
         ...cartProductIds,
     ])].slice(0, 30);
 
-    const [coScores, regional, related] = await Promise.all([
+    const preferredCats = (signals.preferredCategories || []).slice(0, 4);
+    const relatedLimit = Math.min(Math.floor(limit * 0.35), 28);
+
+    const [coScores, regional, related, diverse] = await Promise.all([
         scoreCollaborativeCandidates(seedIds, { limit }),
         loadRegionalDemandCandidates({
             country: signals.country,
-            categoryIds: signals.preferredCategories || [],
+            categoryIds: preferredCats,
             limit: Math.min(limit, 40),
         }),
-        seedIds.length
+        preferredCats.length
             ? populateCards(Product.find({
                 status: "active",
-                categories: { $in: signals.preferredCategories || [] },
+                categories: { $in: preferredCats },
             })
                 .sort({ sold_count: -1, average_rating: -1 })
-                .limit(limit))
+                .limit(relatedLimit))
             : [],
+        getRotatedProducts({
+            limit: Math.max(limit - relatedLimit, Math.floor(limit * 0.5)),
+            seedKey: signals.identityKey || "guest",
+        }),
     ]);
 
     const merged = new Map();
-    [...regional, ...related].forEach((row) => {
+    [...regional, ...related, ...diverse].forEach((row) => {
         merged.set(String(row._id), row);
     });
 
@@ -176,7 +185,7 @@ const buildCandidatePool = async (signals = {}, { limit = 80, cartProductIds = [
     }
 
     return {
-        candidates: [...merged.values()].slice(0, limit),
+        candidates: filterCatalogProducts([...merged.values()]).slice(0, limit),
         coScores,
     };
 };
@@ -282,7 +291,10 @@ const computeSurface = async (surface, req, {
         surface,
     });
 
-    let output = ranked.slice(0, cap);
+    let output = filterCatalogProducts(diversifyByCategory(ranked, {
+        maxPerCategory: surface === "homepage_feed" ? 2 : 3,
+        limit: cap,
+    }));
 
     if (surface === "supplier_highlights") {
         const supplierMap = new Map();
@@ -325,7 +337,7 @@ const getPersonalizedSurface = async (surface, req, options = {}) => {
     if (isMongoConnected()) {
         const cached = await readCache(identityKey, surface, contextKey);
         if (cached?.productIds?.length) {
-            const items = await loadProductsByIds(cached.productIds);
+            const items = filterCatalogProducts(await loadProductsByIds(cached.productIds));
             if (items.length) {
                 return {
                     items: items.slice(0, cap),

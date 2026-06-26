@@ -8,6 +8,7 @@ const {
 } = require("../services/recommendationEngineService");
 const { publishRecommendationEvent } = require("../services/eventStreamService");
 const { trackProductBehavior } = require("../../products/services/recommendationService");
+const { getRecentBrowsedProducts, clearRecentBrowsedProducts } = require("../services/feedMixService");
 const { isMongoConnected } = require("../../../config/db");
 const { withPromiseTimeout } = require("../../../utils/mongoQueryOptions");
 const { isImageSearchBusy } = require("../../../utils/imageSearchGate");
@@ -135,6 +136,55 @@ const respondSurface = async (req, res, surface, options = {}) => {
 module.exports = {
     homepageFeed: (req, res) => respondSurface(req, res, "homepage_feed"),
 
+    recentlyViewed: async (req, res) => {
+        try {
+            const limit = Math.min(Math.max(Number(req.query.limit) || 12, 1), 24);
+            if (!req?.user?._id) {
+                return res.error({ message: "NOT_AUTHORIZED", code: 401 });
+            }
+            if (!isMongoConnected()) {
+                return res.success(buildSurfacePayload(req, [], 0, {
+                    surface: "recently_viewed",
+                    personalized: false,
+                }));
+            }
+
+            const items = await withPromiseTimeout(
+                getRecentBrowsedProducts(req, { limit }),
+                SURFACE_MONGO_BUDGET_MS,
+                []
+            );
+
+            try {
+                await priceExchange(items, req.exchangeRate);
+            } catch (exchangeError) {
+                console.warn("recommendations.recentlyViewed price exchange failed:", exchangeError?.message || exchangeError);
+            }
+
+            return res.success(buildSurfacePayload(req, items, items.length, {
+                surface: "recently_viewed",
+                personalized: Boolean(items.length),
+            }));
+        } catch (error) {
+            console.error("recommendations.recentlyViewed", error);
+            return res.error(error);
+        }
+    },
+
+    clearRecentlyViewed: async (req, res) => {
+        try {
+            if (!req?.user?._id) {
+                return res.error({ message: "NOT_AUTHORIZED", code: 401 });
+            }
+
+            const result = await clearRecentBrowsedProducts(req.user._id);
+            return res.success("RECENTLY_VIEWED_CLEARED", result);
+        } catch (error) {
+            console.error("recommendations.clearRecentlyViewed", error);
+            return res.error(error);
+        }
+    },
+
     similarProducts: async (req, res) => {
         const productId = req.params.productId;
         if (!isValidObjectId(productId)) {
@@ -223,23 +273,28 @@ module.exports = {
                 },
             });
 
-            void trackProductBehavior(req, {
-                productId,
-                eventType,
-                search,
-                metadata: {
-                    page,
-                    dwellTimeMs,
-                    scrollDepth,
-                    filters,
-                    category,
-                    country,
-                    city,
-                    client: true,
-                },
-            }).catch((err) => {
-                console.warn("trackProductBehavior from engagement failed:", err?.message);
-            });
+            const shouldPersistBehavior = req?.user?._id
+                || !(productId && ["view", "dwell", "page_view"].includes(eventType));
+
+            if (shouldPersistBehavior) {
+                void trackProductBehavior(req, {
+                    productId,
+                    eventType,
+                    search,
+                    metadata: {
+                        page,
+                        dwellTimeMs,
+                        scrollDepth,
+                        filters,
+                        category,
+                        country,
+                        city,
+                        client: true,
+                    },
+                }).catch((err) => {
+                    console.warn("trackProductBehavior from engagement failed:", err?.message);
+                });
+            }
 
             return res.success("EVENT_RECORDED", { recorded: true });
         } catch (error) {

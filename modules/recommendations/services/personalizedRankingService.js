@@ -2,6 +2,7 @@ const { parseJsonFromLlm } = require("../../ai/helpers/parseJsonFromLlm");
 const { chatCompletionWithFallback } = require("../../ai/services/chatWithFallback");
 const { isDashscopeConfigured } = require("../../ai/dashscopeClient");
 const { cosineSimilarity } = require("../../ai/services/embeddingService");
+const { diversifyByCategory } = require("./feedMixService");
 
 const RANKING_MODEL = () =>
     process.env.DASHSCOPE_RANKING_MODEL
@@ -31,7 +32,7 @@ const scoreContentBased = (candidate, {
     }
 
     (candidate.categories || []).forEach((catId) => {
-        score += (categoryScores.get(String(catId)) || 0) * 1.5;
+        score += (categoryScores.get(String(catId)) || 0) * 0.75;
     });
 
     score += (coScores.get(String(candidate._id)) || 0) * 2.2;
@@ -168,8 +169,9 @@ const rankCandidates = async (candidates = [], {
         .sort((a, b) => b.score - a.score)
         .map((entry) => entry.row);
 
+    let ranked = scored;
     if (abGroup === "treatment") {
-        return rankWithQwenTurbo(scored, {
+        ranked = await rankWithQwenTurbo(scored, {
             surface,
             country: signals.country,
             priceSensitivity: signals.priceSensitivity,
@@ -177,7 +179,11 @@ const rankCandidates = async (candidates = [], {
         });
     }
 
-    return scored;
+    const maxPerCategory = surface === "homepage_feed" ? 2 : 3;
+    return diversifyByCategory(ranked, {
+        maxPerCategory,
+        limit: ranked.length,
+    });
 };
 
 module.exports = {

@@ -17,6 +17,8 @@ const {
     getRecommendedProducts,
     getPersonalizedProductPage,
     getPersonalizedNewArrivalsPage,
+    getHomeBrowseProductPage,
+    getRotatedProductPage,
     buildCatalogSeedKey,
     trackProductBehavior,
 } = require('../services/recommendationService');
@@ -37,6 +39,10 @@ const { runImageSearchPipeline, searchAlibabaCatalogByKeywords } = require('../h
 const { resolveSmartImageSearch } = require('../../ai/services/smartImageSearchService');
 const { expandSearchQuery } = require('../../ai/services/aiTextSearchService');
 const { isElasticsearchReachable } = require('../../../elasticsearch/availability');
+const { filterCatalogProducts } = require('../helpers/catalogVisibilityHelper');
+const { getSeedNumber } = require('../services/catalogRotationService');
+
+const visibleCatalogItems = (items = []) => filterCatalogProducts(Array.isArray(items) ? items : []);
 
 const looksLikeObjectId = (value) => /^[a-fA-F0-9]{24}$/.test(String(value || "").trim());
 const escapeRegex = (value = "") => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -336,11 +342,13 @@ const fetchCategoryThumbnailUrl = async (categoryId, refresh = "") => {
     if (categoryMatch) Object.assign(match, categoryMatch);
 
     try {
-        const products = await _model.Product.find(match)
-            .sort({ date_created_utc: -1, _id: -1 })
-            .limit(4)
+        const skip = getSeedNumber(`${refresh}:${categoryId}`) % 32;
+        const products = visibleCatalogItems(await _model.Product.find(match)
+            .sort({ sold_count: -1, average_rating: -1, _id: -1 })
+            .skip(skip)
+            .limit(12)
             .select(imageProjection)
-            .lean();
+            .lean());
 
         for (const product of products) {
             const url = pickProductImageUrl(product);
@@ -446,7 +454,7 @@ module.exports = {
                 fast: true,
                 skipExternal: true,
             });
-            const items = normalizeFeaturedImageLink(aiSearch.items || []);
+            const items = visibleCatalogItems(normalizeFeaturedImageLink(aiSearch.items || []));
 
             return res.success("RECORD_FOUND", items, {
                 searchMeta: aiSearch.searchMeta || {
@@ -479,7 +487,7 @@ module.exports = {
                         }
                     })
                 );
-                items = await resolveActiveCatalogItems(rawItems);
+                items = visibleCatalogItems(await resolveActiveCatalogItems(rawItems));
                 total = esTotal;
             } catch (error) {
                 const mongoQuery = { status: "active" };
@@ -487,7 +495,7 @@ module.exports = {
                     await Product.getTopRankingProducts(mongoQuery, { ...req.paginationOptions, limit: limit + 1 }),
                     limit
                 );
-                items = page.items;
+                items = visibleCatalogItems(page.items);
                 hasMore = page.hasMore;
                 total = skip + items.length + (hasMore ? 1 : 0);
                 items = normalizeFeaturedImageLink(items);
@@ -513,13 +521,20 @@ module.exports = {
             if (!search && !category) {
                 const catalogPage = Math.max(1, Number(req.query.skip) || 1);
                 const seedKey = `${buildCatalogSeedKey(req, refresh)}:arrivals`;
-                const personalized = await getPersonalizedNewArrivalsPage(req, {
-                    limit,
-                    page: catalogPage,
-                    seedKey,
-                    refresh,
-                });
-                items = personalized.items;
+                const homeFeedFast = req.query.homeFeed === "true" || req.query.homeFeed === true;
+                const personalized = homeFeedFast
+                    ? await getRotatedProductPage({
+                        limit,
+                        page: catalogPage,
+                        seedKey,
+                    })
+                    : await getPersonalizedNewArrivalsPage(req, {
+                        limit,
+                        page: catalogPage,
+                        seedKey,
+                        refresh,
+                    });
+                items = visibleCatalogItems(personalized.items);
                 hasMore = personalized.hasMore;
                 total = personalized.total;
             } else {
@@ -537,7 +552,7 @@ module.exports = {
                             }
                         })
                     );
-                    items = await resolveActiveCatalogItems(rawItems);
+                    items = visibleCatalogItems(await resolveActiveCatalogItems(rawItems));
                     total = esTotal;
                 } catch (error) {
                     const mongoQuery = getMongoListQuery({ category, search });
@@ -545,7 +560,7 @@ module.exports = {
                         await Product.getNewArrivalsProducts(mongoQuery, { ...req.paginationOptions, limit: limit + 1 }),
                         limit
                     );
-                    items = page.items;
+                    items = visibleCatalogItems(page.items);
                     hasMore = page.hasMore;
                     total = skip + items.length + (hasMore ? 1 : 0);
                     items = normalizeFeaturedImageLink(items);
@@ -581,7 +596,7 @@ module.exports = {
                         }
                     })
                 );
-                items = await resolveActiveCatalogItems(rawItems);
+                items = visibleCatalogItems(await resolveActiveCatalogItems(rawItems));
                 total = esTotal;
             } catch (error) {
                 const mongoQuery = getMongoListQuery({ category, search });
@@ -589,7 +604,7 @@ module.exports = {
                     await Product.getSavingsSpotlight(mongoQuery, { ...req.paginationOptions, limit: limit + 1 }),
                     limit
                 );
-                items = page.items;
+                items = visibleCatalogItems(page.items);
                 hasMore = page.hasMore;
                 total = skip + items.length + (hasMore ? 1 : 0);
                 items = normalizeFeaturedImageLink(items);
@@ -673,11 +688,13 @@ module.exports = {
 
             await priceExchange(item, req.exchangeRate);
 
-            void trackProductBehavior(req, {
-                product: item,
-                eventType: "view",
-                score: 1,
-            });
+            if (req?.user?._id) {
+                void trackProductBehavior(req, {
+                    product: item,
+                    eventType: "view",
+                    score: 1,
+                });
+            }
 
             void getSimilarProducts(productId, { limit: 8 })
                 .then((similarProducts) => {
@@ -779,18 +796,67 @@ module.exports = {
             if (useRotatedBrowse) {
                 const catalogPage = Math.max(1, Number(req.query.skip) || 1);
                 const seedKey = `${buildCatalogSeedKey(req, refresh)}:browse`;
+                const homeBrowseFast = req.query.homeBrowse === "true" || req.query.homeBrowse === true;
+
+                if (homeBrowseFast) {
+                    let browseItems = [];
+                    let total = 0;
+                    let hasMore = false;
+                    let usedElasticsearch = false;
+
+                    try {
+                        const esPayload = unwrapEsSearchResult(
+                            await esProductService.list({ limit, skip })
+                        );
+                        if (esPayload.items?.length || esPayload.total > 0) {
+                            browseItems = visibleCatalogItems(
+                                await resolveActiveCatalogItems(esPayload.items)
+                            );
+                            total = esPayload.total;
+                            hasMore = skip + browseItems.length < esPayload.total;
+                            usedElasticsearch = true;
+                        }
+                    } catch (esError) {
+                        console.warn("homeBrowse ES list failed, using catalog rotation:", esError?.message);
+                    }
+
+                    if (!usedElasticsearch) {
+                        const pageResult = await getHomeBrowseProductPage({
+                            limit,
+                            page: catalogPage,
+                            seedKey,
+                        });
+                        browseItems = visibleCatalogItems(pageResult.items);
+                        total = pageResult.total;
+                        hasMore = pageResult.hasMore;
+                    }
+
+                    await priceExchange(browseItems, req.exchangeRate);
+                    return res.success(req.nextPageOptions(browseItems, total, {
+                        category: null,
+                        hasMore,
+                        personalized: false,
+                    }));
+                }
+
                 const personalized = await getPersonalizedProductPage(req, {
-                    limit,
-                    page: catalogPage,
-                    seedKey,
-                    refresh,
-                });
+                        limit,
+                        page: catalogPage,
+                        seedKey,
+                        refresh,
+                    });
                 const categoryData = null;
-                await priceExchange(personalized.items, req.exchangeRate);
-                return res.success(req.nextPageOptions(personalized.items, personalized.total, {
+                const browseItems = visibleCatalogItems(personalized.items);
+                const recentBrowsed = visibleCatalogItems(personalized.recentBrowsed || []);
+                await priceExchange(browseItems, req.exchangeRate);
+                if (recentBrowsed.length) {
+                    await priceExchange(recentBrowsed, req.exchangeRate);
+                }
+                return res.success(req.nextPageOptions(browseItems, personalized.total, {
                     category: categoryData,
                     hasMore: personalized.hasMore,
                     personalized: true,
+                    recentBrowsed,
                 }));
             }
 
@@ -818,8 +884,8 @@ module.exports = {
                     endImageSearch();
                 }
 
-                const items = result.items || [];
-                const recommendations = result.recommendations || [];
+                const items = visibleCatalogItems(result.items || []);
+                const recommendations = visibleCatalogItems(result.recommendations || []);
                 const categoryData = await safeCategoryById(category);
                 await safePriceExchange(items, req.exchangeRate);
                 if (recommendations.length) {
@@ -881,9 +947,9 @@ module.exports = {
                         searchEngine.includes("mongo") ||
                         searchEngine.includes("alibaba");
                     if (useDirectSearchItems) {
-                        items = normalizeFeaturedImageLink(rawEsItems);
+                        items = visibleCatalogItems(normalizeFeaturedImageLink(rawEsItems));
                     } else {
-                        items = await resolveActiveCatalogItems(rawEsItems);
+                        items = visibleCatalogItems(await resolveActiveCatalogItems(rawEsItems));
                     }
 
                 } else {
@@ -898,7 +964,7 @@ module.exports = {
                     esTotalHits = esPayload.total;
                     esTookMs = esPayload.tookMs || 0;
                     esTimedOut = esPayload.timedOut || false;
-                    items = await resolveActiveCatalogItems(rawEsItems);
+                    items = visibleCatalogItems(await resolveActiveCatalogItems(rawEsItems));
                 }
                 const resolvedCount = items.length;
                 const hasMoreFromEs = skip + resolvedCount < esTotalHits;
@@ -912,7 +978,7 @@ module.exports = {
                     await Product.list(mongoQuery, { ...req.paginationOptions, limit: limit + 1 }),
                     limit
                 );
-                items = page.items;
+                items = visibleCatalogItems(page.items);
                 mongoHasMore = page.hasMore;
                 total = skip + items.length + (mongoHasMore ? 1 : 0);
                 items = normalizeFeaturedImageLink(items);
@@ -921,6 +987,7 @@ module.exports = {
 
             const categoryData = category ? await _model.Category.findById(category) : null;
 
+            items = visibleCatalogItems(items);
             await priceExchange(items, req.exchangeRate);
             const listExtras = { category: categoryData };
             if (imageUrl && String(search || "").trim()) {
@@ -954,7 +1021,7 @@ module.exports = {
         try {
             const { limit } = req.paginationOptions;
             const { category, refresh } = req.query;
-            const items = await getRecommendedProducts(req, { limit, category, refresh });
+            const items = visibleCatalogItems(await getRecommendedProducts(req, { limit, category, refresh }));
 
             await priceExchange(items, req.exchangeRate);
             return res.success(req.nextPageOptions(items, items.length, {
@@ -1087,8 +1154,8 @@ module.exports = {
                 country,
             });
 
-            const items = result.items || [];
-            const recommendations = result.recommendations || [];
+            const items = visibleCatalogItems(result.items || []);
+            const recommendations = visibleCatalogItems(result.recommendations || []);
             await safePriceExchange(items, req.exchangeRate);
             if (recommendations.length) {
                 await safePriceExchange(recommendations, req.exchangeRate);
@@ -1139,7 +1206,7 @@ module.exports = {
                 return res.error("INVALID_PRODUCT_ID");
             }
             const limit = Math.min(Math.max(Number(req.query.limit) || 6, 1), 24);
-            const items = await getSimilarProducts(productId, { limit });
+            const items = visibleCatalogItems(await getSimilarProducts(productId, { limit }));
             await priceExchange(items, req.exchangeRate);
             return res.success("RECORD_FOUND", items);
         } catch (error) {

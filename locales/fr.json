@@ -83,5 +83,13 @@
 	"EVENT_RECORDED": "Événement enregistré",
 	"ASSISTANT_REPLY": "Réponse de l'assistant",
 	"Cannot access 'order' before initialization": "Cannot access 'order' before initialization",
-	"PRODUCT_NAMES_TRANSLATED": "PRODUCT_NAMES_TRANSLATED"
+	"PRODUCT_NAMES_TRANSLATED": "PRODUCT_NAMES_TRANSLATED",
+	"PRODUCT_DETAIL_TRANSLATED": "PRODUCT_DETAIL_TRANSLATED",
+	"connection 12 to 8": {
+		"211": {
+			"56": {
+				"133": "27017 timed out"
+			}
+		}
+	}
 }

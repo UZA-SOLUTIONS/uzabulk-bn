@@ -161,7 +161,6 @@ const retrieveKnowledge = async ({
     limit,
 } = {}) => {
     const run = async () => {
-        const effectiveLimit = limit || Math.max(TOP_K(), order || latestOrderProductChunks.length ? 10 : TOP_K());
         const orderRef = explicitOrderRef || extractOrderRef(query);
         const chunks = [];
 
@@ -194,6 +193,12 @@ const retrieveKnowledge = async ({
                 latestOrderProductChunks = await buildOrderProductChunks(latestOrder);
             }
         }
+
+        const effectiveLimit = limit || (
+            (order || latestOrderProductChunks.length)
+                ? Math.max(TOP_K(), 10)
+                : TOP_K()
+        );
 
         const orderChunk = await buildOrderChunk(order);
         if (orderChunk) chunks.push(orderChunk);

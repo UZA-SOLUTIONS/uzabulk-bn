@@ -116,5 +116,8 @@
 	"connection 1 to 8.211.56.133:27017 timed out": "connection 1 to 8.211.56.133:27017 timed out",
 	"req.nextPageOptions is not a function": "req.nextPageOptions is not a function",
 	"withRequestTimeout is not defined": "withRequestTimeout is not defined",
-	"ASSISTANT_REPLY": "ASSISTANT_REPLY"
+	"ASSISTANT_REPLY": "ASSISTANT_REPLY",
+	"Cannot access 'order' before initialization": "Cannot access 'order' before initialization",
+	"PRODUCT_NAMES_TRANSLATED": "PRODUCT_NAMES_TRANSLATED",
+	"PRODUCT_DETAIL_TRANSLATED": "PRODUCT_DETAIL_TRANSLATED"
 }
