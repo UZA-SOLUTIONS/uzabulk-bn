@@ -94,8 +94,28 @@ const resolveAlibabaImageSearchInput = async (imageAddress) => {
     return null;
 };
 
+/** Params for com.alibaba.product:alibaba.public.image.similar.offer.search (imgUrl or imgBase64). */
+const buildDomesticImageParams = (imageInput, imageUrl, imageKeywords = "") => {
+    const params = {};
+    const b64 = String(imageInput?.imageBase64 || "").trim();
+    const address = String(imageInput?.imageAddress || imageUrl || "").trim();
+
+    if (b64) {
+        params.imgBase64 = b64.startsWith("data:") ? b64 : `data:image/jpeg;base64,${b64}`;
+    } else if (address) {
+        params.imgUrl = address;
+    } else {
+        return null;
+    }
+
+    const keywords = String(imageKeywords || "").trim();
+    if (keywords) params.imageKeywords = keywords;
+    return params;
+};
+
 module.exports = {
     resolveAlibabaImageSearchInput,
     buildAlicdnImageAddress,
+    buildDomesticImageParams,
     extractO1cnImageName,
 };

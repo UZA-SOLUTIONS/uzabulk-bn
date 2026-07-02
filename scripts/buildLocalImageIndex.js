@@ -11,7 +11,11 @@ const OUTPUT_DIR = process.env.LOCAL_IMAGE_SEARCH_OUTPUT_DIR || path.resolve(pro
 const PRODUCTS_JSON = path.join(OUTPUT_DIR, "products.json");
 const INDEX_PATH = process.env.LOCAL_IMAGE_SEARCH_INDEX || path.join(OUTPUT_DIR, "products.index.faiss");
 const META_PATH = process.env.LOCAL_IMAGE_SEARCH_META || path.join(OUTPUT_DIR, "products.meta.json");
-const BUILD_LIMIT = Number(process.env.LOCAL_IMAGE_SEARCH_BUILD_LIMIT || 1500);
+const BUILD_LIMIT = Number(process.env.LOCAL_IMAGE_SEARCH_BUILD_LIMIT || 0);
+const IMAGES_PER_PRODUCT = Math.min(
+    Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_IMAGES_PER_PRODUCT || 4), 1),
+    8
+);
 
 const waitForModelsReady = (timeoutMs = 60000) =>
     new Promise((resolve, reject) => {
@@ -29,28 +33,55 @@ const waitForModelsReady = (timeoutMs = 60000) =>
         }, 250);
     });
 
+const resolveImageUrl = (value) => {
+    if (!value) return "";
+    if (typeof value === "string") return value.trim();
+    if (typeof value === "object" && value.link) return String(value.link).trim();
+    return "";
+};
+
+const collectProductImageUrls = (product, maxImages = IMAGES_PER_PRODUCT) => {
+    const urls = [];
+    const add = (value) => {
+        const url = resolveImageUrl(value);
+        if (url && !urls.includes(url)) urls.push(url);
+    };
+    add(product?.featured_image);
+    (product?.images || []).forEach(add);
+    return urls.slice(0, maxImages);
+};
+
 const run = async () => {
     try {
         await waitForModelsReady();
-        const products = await _model.Product.find({ status: "active" })
-            .select("offerId name featured_image")
-            .populate({ path: "featured_image", select: "link -_id" })
-            .limit(Number.isFinite(BUILD_LIMIT) && BUILD_LIMIT > 0 ? BUILD_LIMIT : 1500)
-            .lean();
 
-        const dataset = products
-            .map((p) => ({
-                offerId: String(p?.offerId || "").trim(),
-                name: p?.name || "",
-                imageUrl:
-                    typeof p?.featured_image === "string"
-                        ? p.featured_image
-                        : (p?.featured_image?.link || ""),
-            }))
-            .filter((p) => p.offerId && p.imageUrl);
+        let query = _model.Product.find({ status: "active" })
+            .select("offerId name featured_image images")
+            .sort({ sold_count: -1, date_created_utc: -1 });
+
+        if (Number.isFinite(BUILD_LIMIT) && BUILD_LIMIT > 0) {
+            query = query.limit(BUILD_LIMIT);
+        }
+
+        const products = await query.lean();
+
+        const dataset = [];
+        products.forEach((product) => {
+            const offerId = String(product?.offerId || "").trim();
+            if (!offerId) return;
+            const imageUrls = collectProductImageUrls(product);
+            imageUrls.forEach((imageUrl) => {
+                dataset.push({
+                    offerId,
+                    name: product?.name || "",
+                    imageUrl,
+                });
+            });
+        });
 
         fs.mkdirSync(OUTPUT_DIR, { recursive: true });
         fs.writeFileSync(PRODUCTS_JSON, JSON.stringify(dataset, null, 2), "utf-8");
+        console.log(`Prepared ${dataset.length} image rows from ${products.length} products.`);
 
         const args = [
             PYTHON_SCRIPT,

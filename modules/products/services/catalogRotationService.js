@@ -4,7 +4,8 @@ const {
     buildMongoCategoryMatch,
 } = require("./categoryFilterHelper");
 const {
-    filterCatalogProducts,
+    balanceCatalogProducts,
+    isBlockedCatalogProduct,
 } = require("../helpers/catalogVisibilityHelper");
 
 const DEFAULT_LIMIT = 24;
@@ -90,12 +91,12 @@ const fetchUsableProducts = async ({
                 .limit(batchSize)
         );
         if (!batch.length) break;
-        products.push(...filterCatalogProducts(batch));
+        products.push(...batch.filter((product) => !isBlockedCatalogProduct(product)));
         cursor += batch.length;
         if (batch.length < batchSize) break;
     }
 
-    return dedupeProductList(products).slice(0, safeLimit);
+    return balanceCatalogProducts(dedupeProductList(products), { maxSensitive: 2 }).slice(0, safeLimit);
 };
 
 const getRotatedProducts = async ({

@@ -75,7 +75,7 @@ const env = {
         "TOKEN_URI": process.env.GOOGLE_TOKEN_URI || "https://oauth2.googleapis.com/token"
     },
     "localImageSearch": {
-        "ENABLED": String(process.env.LOCAL_IMAGE_SEARCH_ENABLED || "").toLowerCase() === "true",
+        "ENABLED": String(process.env.LOCAL_IMAGE_SEARCH_ENABLED ?? "true").toLowerCase() !== "false",
         "PYTHON_BIN": process.env.LOCAL_IMAGE_SEARCH_PYTHON_BIN || "python",
         "SCRIPT": process.env.LOCAL_IMAGE_SEARCH_SCRIPT || "",
         "INDEX_PATH": process.env.LOCAL_IMAGE_SEARCH_INDEX || "",

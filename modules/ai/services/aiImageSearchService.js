@@ -53,6 +53,7 @@ const extractImageSearchKeywords = async (imageAddress) => {
                     text: [
                         "You analyze ANY product photo for B2B wholesale search — the item may NOT be in our catalog.",
                         "Identify the main object, name it clearly, and suggest how to find similar wholesale products.",
+                        "Use concrete wholesale listing language (material, product type, use-case) — not vague retail terms.",
                         "Return JSON only (no markdown):",
                         "{",
                         '  "object_label": string,',

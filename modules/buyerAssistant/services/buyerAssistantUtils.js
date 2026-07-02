@@ -25,8 +25,11 @@ const embedTimeoutMs = () =>
 const retrievalTimeoutMs = () =>
     Math.min(Math.max(Number(process.env.BUYER_ASSISTANT_RETRIEVAL_TIMEOUT_MS || 6000), 2000), 15000);
 
+const { isProductFindingQuery, isAccountOnlyQuery } = require("./assistantIntentService");
+
 const needsProductSearch = (query, productId) => {
     if (productId) return true;
+    if (isProductFindingQuery(query, productId)) return true;
 
     const q = String(query || "").trim().toLowerCase();
     if (q.length < 3) return false;
@@ -34,10 +37,9 @@ const needsProductSearch = (query, productId) => {
         return false;
     }
 
-    const accountOnly = /(my order|order status|track|cart|address|account|payment|profile|sign.?in|logged)/i.test(q);
-    const productHint = /(product|price|moq|cost|buy|item|stock|wholesale|sku|offer|catalog|lamp|table|chair|phone|bag|shoe)/i.test(q);
+    if (isAccountOnlyQuery(q)) return false;
 
-    if (accountOnly && !productHint) return false;
+    const productHint = /(product|price|moq|cost|buy|item|stock|wholesale|sku|offer|catalog|lamp|table|chair|phone|bag|shoe|tshirt|shirt)/i.test(q);
     return productHint || q.split(/\s+/).filter((w) => w.length >= 3).length >= 2;
 };
 

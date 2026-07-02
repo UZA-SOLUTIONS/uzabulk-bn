@@ -129,19 +129,7 @@ const getProductDetail = async (productId) => {
 
     const crossborderDetail = result.ok ? result.data : null;
     if (crossborderDetail) {
-        const min_order_qty = extractMinOrderQty(crossborderDetail);
-        const minOrderQuantity = crossborderDetail.minOrderQuantity
-            || crossborderDetail.productSaleInfo?.minOrderQuantity
-            || min_order_qty;
-        const supplierIds = extractSupplierIds(crossborderDetail);
-        return {
-            ...crossborderDetail,
-            ...(min_order_qty != null ? { min_order_qty } : {}),
-            ...(minOrderQuantity != null ? { minOrderQuantity } : {}),
-            ...(supplierIds.sellerOpenId ? { sellerOpenId: supplierIds.sellerOpenId } : {}),
-            ...(supplierIds.seller_id ? { seller_id: supplierIds.seller_id } : {}),
-            ...(supplierIds.supplier_id ? { supplier_id: supplierIds.supplier_id } : {}),
-        };
+        return normalizeAlibabaProductInfo(crossborderDetail, productId);
     }
 
     const productInfo = await getAlibabaProduct(productId, { scene: "1688" });
@@ -158,11 +146,31 @@ const extractImageSearchOffers = (payload) => {
         payload?.data?.offerList,
         payload?.data,
         payload?.result?.data,
+        payload?.sameOfferModelList,
+        payload?.data?.sameOfferModelList,
+        payload?.relatedOfferList,
+        payload?.data?.relatedOfferList,
     ];
     for (const list of candidates) {
         if (Array.isArray(list) && list.length) return list;
     }
     return [];
+};
+
+const extractDomesticImageSearchOffers = (payload) => {
+    if (!payload) return [];
+    const list = payload?.imageSearchResult
+        || payload?.data?.imageSearchResult
+        || payload?.result?.imageSearchResult;
+    if (!Array.isArray(list)) return [];
+    return list.map((row) => ({
+        offerId: row?.offerId || row?.offer_id,
+        subject: row?.subject || row?.title || "",
+        subjectTrans: row?.subject || row?.title || "",
+        imageUrl: row?.image || row?.imageUrl || "",
+        price: row?.price,
+        detailUrl: row?.detailUrl,
+    })).filter((row) => row.offerId);
 };
 
 const mapOfferToProductStub = (row = {}) => {
@@ -233,6 +241,10 @@ const searchImageQuery = async ({
     beginPage = 1,
     pageSize = 32,
     country = "en",
+    imageKeywords = "",
+    categoryId,
+    priceStart,
+    priceEnd,
 }) => {
     if (!client.isConfigured()) {
         console.error("Alibaba credentials are missing for image search.");
@@ -244,6 +256,20 @@ const searchImageQuery = async ({
         pageSize: Number(pageSize) || 32,
         country: String(country || "en").trim() || "en",
     };
+
+    const keywordHint = String(imageKeywords || "").trim();
+    if (keywordHint) {
+        query.keyWord = keywordHint;
+    }
+    if (categoryId != null && categoryId !== "") {
+        query.categoryId = categoryId;
+    }
+    if (priceStart != null && priceStart !== "") {
+        query.priceStart = String(priceStart);
+    }
+    if (priceEnd != null && priceEnd !== "") {
+        query.priceEnd = String(priceEnd);
+    }
 
     if (imageId) {
         query.imageId = String(imageId);
@@ -260,6 +286,124 @@ const searchImageQuery = async ({
     const result = await client.get(urlPath, { offerQueryParam });
     if (!result.ok) {
         console.warn("[1688] product.search.imageQuery failed:", result.error || "unknown");
+        return null;
+    }
+    return result.data;
+};
+
+/** Domestic dropshipping image search — up to 10 visual matches (com.alibaba.product). */
+const searchDomesticSimilarImageOffers = async ({
+    imgUrl = "",
+    imgBase64 = "",
+    imageKeywords = "",
+    priceStart,
+    priceEnd,
+    filter,
+} = {}) => {
+    if (!client.isConfigured()) return null;
+
+    const params = {};
+    const url = String(imgUrl || "").trim();
+    const b64 = String(imgBase64 || "").trim();
+    if (b64) {
+        params.imgBase64 = b64.startsWith("data:") ? b64 : b64;
+    } else if (url) {
+        params.imgUrl = url;
+    } else {
+        return null;
+    }
+
+    const keywords = String(imageKeywords || "").trim();
+    if (keywords) params.imageKeywords = keywords;
+    if (priceStart != null && priceStart !== "") params.priceStart = String(priceStart);
+    if (priceEnd != null && priceEnd !== "") params.priceEnd = String(priceEnd);
+    if (Array.isArray(filter) && filter.length) params.filter = filter;
+
+    const urlPath = client.urlPath(PRODUCT_NS, "alibaba.public.image.similar.offer.search");
+    const result = await client.post(urlPath, params);
+    if (!result.ok) {
+        console.warn("[1688] alibaba.public.image.similar.offer.search failed:", result.error || "unknown");
+        return null;
+    }
+    return result.data;
+};
+
+/** Multilingual same-product search (image + optional keyword). */
+const searchSameOffers = async ({
+    offerId,
+    imageAddress,
+    imageId,
+    imageBase64,
+    keyword = "",
+    beginPage = 1,
+    pageSize = 20,
+    country = "en",
+} = {}) => {
+    if (!client.isConfigured() || !offerId) return null;
+
+    const query = {
+        offerId: String(offerId),
+        beginPage: Number(beginPage) || 1,
+        pageSize: Number(pageSize) || 20,
+        country: String(country || "en").trim() || "en",
+    };
+    const keyWord = String(keyword || "").trim();
+    if (keyWord) query.keyWord = keyWord;
+    if (imageId) query.imageId = String(imageId);
+    else if (imageBase64) query.imageBase64 = String(imageBase64).trim();
+    else if (imageAddress) query.imageAddress = String(imageAddress).trim();
+
+    const urlPath = client.urlPath(CROSSBORDER_NS, "product.search.sameOffers");
+    const offerQueryParam = JSON.stringify(query);
+    const result = await client.get(urlPath, { offerQueryParam });
+    if (!result.ok) {
+        console.warn("[1688] product.search.sameOffers failed:", result.error || "unknown");
+        return null;
+    }
+    return result.data;
+};
+
+/** Related / similar distribution offers for a seed offerId. */
+const searchRelatedRecommend = async ({
+    offerId,
+    pageSize = 20,
+    country = "en",
+} = {}) => {
+    if (!client.isConfigured() || !offerId) return null;
+
+    const relatedQueryParam = JSON.stringify({
+        offerId: String(offerId),
+        pageSize: Number(pageSize) || 20,
+        country: String(country || "en").trim() || "en",
+    });
+
+    const urlPath = client.urlPath(CROSSBORDER_NS, "product.related.recommend");
+    const result = await client.get(urlPath, { relatedQueryParam });
+    if (!result.ok) {
+        console.warn("[1688] product.related.recommend failed:", result.error || "unknown");
+        return null;
+    }
+    return result.data;
+};
+
+/** Supply-side similar offer search (replacement / matching recommendations). */
+const searchSimilarSupplyOffers = async ({
+    offerId,
+    pageSize = 20,
+    country = "en",
+} = {}) => {
+    if (!client.isConfigured() || !offerId) return null;
+
+    const param = JSON.stringify({
+        offerId: String(offerId),
+        pageSize: Number(pageSize) || 20,
+        country: String(country || "en").trim() || "en",
+    });
+
+    const urlPath = client.urlPath(CROSSBORDER_NS, "supply.similarOffer.search");
+    const result = await client.post(urlPath, { offerQueryParam: param });
+    if (!result.ok) {
+        console.warn("[1688] supply.similarOffer.search failed:", result.error || "unknown");
         return null;
     }
     return result.data;
@@ -376,11 +520,17 @@ const getAlibabaProduct = async (productID, opts = {}) => {
 module.exports = {
     getProductDetail,
     searchImageQuery,
+    searchDomesticSimilarImageOffers,
+    searchSameOffers,
+    searchRelatedRecommend,
+    searchSimilarSupplyOffers,
     uploadProductImage,
     extractImageSearchOffers,
+    extractDomesticImageSearchOffers,
     extractKeywordSearchOffers,
     searchOffersByKeywords,
     mapOfferToProductStub,
     getAlibabaProduct,
     searchProductsQuery,
+    isConfigured: () => client.isConfigured(),
 };

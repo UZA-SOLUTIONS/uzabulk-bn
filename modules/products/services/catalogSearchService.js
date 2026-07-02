@@ -232,6 +232,7 @@ const buildImageSearchCatalogNeedles = ({
     searchPhrase = "",
     objectLabel = "",
     keywords = [],
+    categoryHint = "",
 } = {}) => {
     const needles = [];
     const seen = new Set();
@@ -785,11 +786,23 @@ const searchCatalogForImage = async ({
     fieldName,
     fieldValue,
 } = {}) => {
-    const needles = buildImageSearchCatalogNeedles({
+    const { expandNeedlesForImageSearch } = require("./catalogVocabularyService");
+
+    let needles = buildImageSearchCatalogNeedles({
         primaryKeyword: vision?.primaryKeyword || search,
         searchPhrase: vision?.searchPhrase || search,
         objectLabel: vision?.objectLabel || "",
         keywords: vision?.keywords || [],
+        categoryHint: vision?.attributes?.category || "",
+    });
+
+    needles = await expandNeedlesForImageSearch({
+        needles,
+        primaryKeyword: vision?.primaryKeyword || search,
+        searchPhrase: vision?.searchPhrase || search,
+        objectLabel: vision?.objectLabel || "",
+        keywords: vision?.keywords || [],
+        categoryHint: vision?.attributes?.category || "",
     });
 
     if (!needles.length) {

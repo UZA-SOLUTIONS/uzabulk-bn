@@ -1,7 +1,7 @@
 const Product = require("../../../models/productsTable");
 const ProductBehavior = require("../../../models/productBehaviorTable");
 const { isMongoConnected } = require("../../../config/db");
-const { filterCatalogProducts } = require("../../products/helpers/catalogVisibilityHelper");
+const { balanceCatalogProducts } = require("../../products/helpers/catalogVisibilityHelper");
 
 const BROWSE_EVENTS = new Set(["view", "dwell", "page_view", "search"]);
 
@@ -133,7 +133,7 @@ const getRecentBrowsedProducts = async (req, { limit = 12 } = {}) => {
         Product.find({ _id: { $in: orderedIds.slice(0, cap * 2) }, status: "active" })
     );
     const byId = new Map(rows.map((row) => [String(row._id), row]));
-    return filterCatalogProducts(
+    return balanceCatalogProducts(
         orderedIds
             .map((id) => byId.get(id))
             .filter(Boolean)

@@ -12,6 +12,7 @@ const {
     buildOrderProductChunks,
 } = require("./orderKnowledgeService");
 const { withTimeout, isFastMode, retrievalTimeoutMs } = require("./buyerAssistantUtils");
+const { isProductFindingQuery, isAccountIntentQuery } = require("./assistantIntentService");
 
 const TOP_K = () => Number(process.env.BUYER_ASSISTANT_RAG_TOP_K || 6);
 
@@ -162,17 +163,23 @@ const retrieveKnowledge = async ({
 } = {}) => {
     const run = async () => {
         const orderRef = explicitOrderRef || extractOrderRef(query);
+        const productFinding = isProductFindingQuery(query, productId)
+            && !isAccountIntentQuery(query);
         const chunks = [];
 
         const vectorSearchFn = queryVector
             ? (vector, opts) => searchProductsByVector(vector, {}, opts)
             : null;
 
-        const productLimit = isFastMode() ? 3 : 4;
+        const productLimit = productFinding
+            ? (isFastMode() ? 5 : 6)
+            : (isFastMode() ? 3 : 4);
 
         const [order, buyerChunks, productChunks, faqs] = await Promise.all([
             fetchOrderForUser({ orderRef, userId, deviceId }),
-            fetchBuyerChunks({ userId, deviceId }),
+            productFinding && !orderRef
+                ? Promise.resolve([])
+                : fetchBuyerChunks({ userId, deviceId }),
             resolveProductChunksForQuery({
                 query,
                 queryVector,
@@ -184,7 +191,7 @@ const retrieveKnowledge = async ({
         ]);
 
         let latestOrderProductChunks = [];
-        if (userId && !order && /order|ordered|purchase|bought|my items|what did i/i.test(String(query || ""))) {
+        if (userId && !order && !productFinding && /order|ordered|purchase|bought|my items|what did i/i.test(String(query || ""))) {
             const latestOrder = await Order.findOne({ user: userId })
                 .sort({ date_created_utc: -1 })
                 .select("customOrderId line_items orderStatus orderTotal date_created_utc")
@@ -195,23 +202,29 @@ const retrieveKnowledge = async ({
         }
 
         const effectiveLimit = limit || (
-            (order || latestOrderProductChunks.length)
-                ? Math.max(TOP_K(), 10)
-                : TOP_K()
+            productFinding
+                ? Math.max(TOP_K(), 8)
+                : ((order || latestOrderProductChunks.length)
+                    ? Math.max(TOP_K(), 10)
+                    : TOP_K())
         );
 
         const orderChunk = await buildOrderChunk(order);
-        if (orderChunk) chunks.push(orderChunk);
+        if (orderChunk && !productFinding) chunks.push(orderChunk);
 
-        if (order) {
+        if (order && !productFinding) {
             const lineItemsChunk = buildOrderLineItemsChunk(order);
             if (lineItemsChunk) chunks.push(lineItemsChunk);
             const orderProductChunks = await buildOrderProductChunks(order);
             chunks.push(...orderProductChunks);
         }
 
-        chunks.push(...buyerChunks);
+        productChunks.forEach((chunk) => {
+            chunk.score = Number(chunk.score || 0) + (productFinding ? 2.5 : 0);
+        });
         chunks.push(...productChunks);
+
+        chunks.push(...buyerChunks);
         chunks.push(...latestOrderProductChunks);
 
         const policyChunks = rankStaticChunks(query, queryVector, tradePolicies, isFastMode() ? 2 : 3);
@@ -245,6 +258,7 @@ const retrieveKnowledge = async ({
             orderId: order?._id ? String(order._id) : null,
             productId: productId || null,
             isLoggedIn: Boolean(userId),
+            productFinding,
         };
     };
 

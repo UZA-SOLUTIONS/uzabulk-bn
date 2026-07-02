@@ -20,6 +20,7 @@ const ensureProductEmbedding = async (productId, { force = false } = {}) => {
 
     const product = await Product.findById(productId)
         .select("name short_description description categories pricingType embedding embedding_updated_at status meta_data seoSettings")
+        .populate({ path: "categories", select: "catName" })
         .lean();
 
     if (!product || product.status !== "active") return null;
@@ -142,6 +143,7 @@ const backfillProductEmbeddings = async ({ limit = 50, force = false } = {}) => 
 
     const products = await Product.find(query)
         .select("name short_description description categories pricingType meta_data seoSettings")
+        .populate({ path: "categories", select: "catName" })
         .limit(Math.max(1, Math.min(limit, 200)))
         .lean();
 

@@ -11,7 +11,7 @@ const { rankCandidates } = require("./personalizedRankingService");
 const { getSimilarProducts } = require("../../products/services/similarProductsService");
 const { getEmbeddingDiscoveryProducts } = require("../../products/services/aiRecommendationService");
 const { getRotatedProducts } = require("../../products/services/catalogRotationService");
-const { filterCatalogProducts } = require("../../products/helpers/catalogVisibilityHelper");
+const { balanceCatalogProducts } = require("../../products/helpers/catalogVisibilityHelper");
 const { cosineSimilarity } = require("../../ai/services/embeddingService");
 const { diversifyByCategory } = require("./feedMixService");
 
@@ -185,7 +185,7 @@ const buildCandidatePool = async (signals = {}, { limit = 80, cartProductIds = [
     }
 
     return {
-        candidates: filterCatalogProducts([...merged.values()]).slice(0, limit),
+        candidates: balanceCatalogProducts([...merged.values()]).slice(0, limit),
         coScores,
     };
 };
@@ -291,7 +291,7 @@ const computeSurface = async (surface, req, {
         surface,
     });
 
-    let output = filterCatalogProducts(diversifyByCategory(ranked, {
+    let output = balanceCatalogProducts(diversifyByCategory(ranked, {
         maxPerCategory: surface === "homepage_feed" ? 2 : 3,
         limit: cap,
     }));
@@ -337,7 +337,7 @@ const getPersonalizedSurface = async (surface, req, options = {}) => {
     if (isMongoConnected()) {
         const cached = await readCache(identityKey, surface, contextKey);
         if (cached?.productIds?.length) {
-            const items = filterCatalogProducts(await loadProductsByIds(cached.productIds));
+            const items = balanceCatalogProducts(await loadProductsByIds(cached.productIds));
             if (items.length) {
                 return {
                     items: items.slice(0, cap),

@@ -1,5 +1,5 @@
 /**
- * Smart image search: Qwen-VL → Elasticsearch catalog (primary), Mongo fallback, optional 1688.
+ * Smart image search: visual match to catalog photos first; VL keywords when visual matches are thin.
  */
 const fs = require("fs");
 const path = require("path");
@@ -11,13 +11,26 @@ const {
 } = require("./aiImageSearchService");
 const {
     runAlibabaImageSearch,
+    runEnhanced1688ImageSearch,
+    is1688EnhancedImageSearchEnabled,
     searchAlibabaCatalogByKeywords,
     runLocalVisualSearch,
 } = require("../../products/helper/imageSearchPipeline");
+const { isLocalImageSearchEnabled } = require("../../products/services/localImageSearch");
 const { guessLocalImagePath } = require("../helpers/resolveVisionImageInput");
 const { isMongoConnected } = require("../../../config/db");
 const { withPromiseTimeout } = require("../../../utils/mongoQueryOptions");
 const Product = require("../../../models/productsTable");
+const { rerankImageSearchItems } = require("../../products/services/catalogMetadataReranker");
+const {
+    isVisualMatchItem,
+    buildVisionFromVisualMatches,
+    expandFromVisualSeeds,
+    buildImageSearchListMeta,
+    buildRelevanceContext,
+    filterImageSearchResults,
+    filterSupplementalItems,
+} = require("../../products/services/visualFirstImageSearchHelper");
 const { getEmbedding, cosineSimilarity } = require("./embeddingService");
 const { getSimilarProducts } = require("../../products/services/similarProductsService");
 
@@ -43,6 +56,14 @@ const ALIBABA_SEARCH_BUDGET_MS = Math.min(
     45000
 );
 
+const ALIBABA_ENHANCED_BUDGET_MS = Math.min(
+    Math.max(
+        Number(process.env.IMAGE_SEARCH_1688_ENHANCED_BUDGET_MS || ALIBABA_SEARCH_BUDGET_MS * 2),
+        ALIBABA_SEARCH_BUDGET_MS
+    ),
+    60000
+);
+
 const getSearchCatalogForImage = () =>
     require("../../products/services/catalogSearchService").searchCatalogForImage;
 
@@ -58,15 +79,36 @@ const getSearchCatalogByText = () =>
 const itemKey = (item) => String(item?._id || item?.offerId || "");
 
 const mergeItems = (target = [], incoming = [], { scoreBoost = 0 } = {}) => {
-    const seen = new Set(target.map(itemKey));
+    const indexByKey = new Map(target.map((item, index) => [itemKey(item), index]));
     incoming.forEach((item) => {
         const key = itemKey(item);
-        if (!key || seen.has(key)) return;
-        seen.add(key);
-        if (scoreBoost > 0) {
-            item.match_score = Number((Number(item.match_score || 0) + scoreBoost).toFixed(4));
+        if (!key) return;
+
+        const incomingScore = Number(item.match_score || item.similarity_score || 0) + scoreBoost;
+        const existingIndex = indexByKey.get(key);
+
+        if (existingIndex !== undefined) {
+            const existing = target[existingIndex];
+            const existingScore = Number(existing.match_score || existing.similarity_score || 0);
+            if (item.similarity_score
+                && (!existing.similarity_score || item.similarity_score > existing.similarity_score)) {
+                existing.similarity_score = item.similarity_score;
+            }
+            if (item.match_type === "visual" || existing.match_type === "visual") {
+                existing.match_type = "visual";
+            }
+            existing.match_score = Number(Math.max(existingScore, incomingScore).toFixed(4));
+            return;
         }
-        target.push(item);
+
+        const next = { ...item };
+        if (scoreBoost > 0) {
+            next.match_score = Number(
+                (Number(next.match_score || next.similarity_score || 0) + scoreBoost).toFixed(4)
+            );
+        }
+        indexByKey.set(key, target.length);
+        target.push(next);
     });
     return target;
 };
@@ -107,12 +149,35 @@ const inferVisionFromItems = (items = []) => {
     };
 };
 
-const rankItems = (items = []) =>
-    [...items].sort((a, b) => {
-        const scoreA = Number(a.match_score || a.similarity_score || a._score || 0);
-        const scoreB = Number(b.match_score || b.similarity_score || b._score || 0);
+const isVisualFirstImageSearch = () =>
+    String(process.env.IMAGE_SEARCH_VISUAL_FIRST ?? "true").toLowerCase() !== "false";
+
+const minVisualResultsForPrimary = () =>
+    Math.max(Number(process.env.IMAGE_SEARCH_VISUAL_MIN_RESULTS || 2), 1);
+
+/** Visual matches first (highest % on top), then everything else by relevance score. */
+const prioritizeVisualMatches = (items = []) => {
+    const visual = [];
+    const rest = [];
+
+    (items || []).forEach((item) => {
+        if (isVisualMatchItem(item)) visual.push(item);
+        else rest.push(item);
+    });
+
+    visual.sort(
+        (a, b) => Number(b.similarity_score || 0) - Number(a.similarity_score || 0)
+    );
+    rest.sort((a, b) => {
+        const scoreA = Number(a.match_score || a._score || 0);
+        const scoreB = Number(b.match_score || b._score || 0);
         return scoreB - scoreA;
     });
+
+    return [...visual, ...rest];
+};
+
+const rankItems = (items = []) => prioritizeVisualMatches(items);
 
 const VISION_CACHE = new Map();
 const VISION_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -171,8 +236,13 @@ const resolveVision = async (imageUrl, fallbackSearch = "") => {
 };
 
 /**
- * Image search — Qwen-VL keywords → Elasticsearch catalog (primary), Mongo fallback, optional 1688.
+ * Image search — visual match to catalog photos first; VL keywords only when visual matches are thin.
  */
+const VISUAL_SEARCH_BUDGET_MS = Math.min(
+    Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_BUDGET_MS || 12000), 4000),
+    25000
+);
+
 const resolveSmartImageSearch = async ({
     imageUrl,
     limit = 24,
@@ -185,187 +255,267 @@ const resolveSmartImageSearch = async ({
     fallbackSearch = "",
 } = {}) => {
     const pageLimit = Math.max(1, Math.min(Number(limit) || 24, 48));
+    const visualFirst = isVisualFirstImageSearch();
+    const minVisual = minVisualResultsForPrimary();
+    const minResults = Math.min(3, pageLimit);
+    const mongoReady = isMongoConnected();
+    const embeddingPrimaryEnabled = String(process.env.IMAGE_SEARCH_EMBEDDING_PRIMARY ?? "true").toLowerCase() !== "false";
+
     let items = [];
     let provider = "none";
+    let vision = null;
+    let searchMode = "keyword";
+    let relevanceContext = buildRelevanceContext(null, []);
 
-    const vision = await resolveVision(imageUrl, fallbackSearch);
-    const primaryKeyword = vision?.primaryKeyword || vision?.searchPhrase || vision?.objectLabel || "";
-    const keywords = (vision?.keywords || []).slice(0, 6);
-    const searchPhrase = vision?.searchPhrase || primaryKeyword;
-    const minResults = Math.min(3, pageLimit);
-    const catalogNeedles = getBuildImageSearchCatalogNeedles()({
-        primaryKeyword,
-        searchPhrase,
-        objectLabel: vision?.objectLabel || "",
-        keywords,
-    });
-    const mongoReady = isMongoConnected();
-
-    if (primaryKeyword || searchPhrase) {
-        provider = vision?.provider || "ai-vision";
-    }
-
-    if (catalogNeedles.length || primaryKeyword || searchPhrase) {
-        const ranked = getRankImageSearchNeedles()(catalogNeedles);
-        console.log(`[smart-image-search] catalog needles: ${ranked.join("|")}`);
-        try {
-            const catalogResult = await getSearchCatalogForImage()({
-                search: primaryKeyword || searchPhrase,
-                limit: pageLimit,
-                skip,
-                category,
-                fieldName,
-                fieldValue,
-                vision,
-            });
-            const catalogItems = normalizeCatalogItems(catalogResult?.items || []);
-            if (catalogItems.length) {
-                mergeItems(items, catalogItems, { scoreBoost: 6 });
-                const engine = catalogResult?.engine || "catalog";
-                provider = engine === "elasticsearch"
-                    ? `${provider === "none" ? "ai-vision" : provider}+catalog-es`
-                    : `${provider === "none" ? "ai-vision" : provider}+catalog-mongo`;
-            }
-        } catch (catalogErr) {
-            console.warn("[smart-image-search] catalog search failed:", catalogErr?.message || catalogErr);
-        }
-    }
-
-    if (items.length < pageLimit && (primaryKeyword || searchPhrase)) {
-        try {
-            const textResult = await getSearchCatalogByText()({
-                search: primaryKeyword || searchPhrase,
-                limit: pageLimit,
-                skip,
-                category,
-                fieldName,
-                fieldValue,
-                fast: true,
-                skipExternal: true,
-            });
-            const textItems = normalizeCatalogItems(textResult?.items || []);
-            if (textItems.length) {
-                mergeItems(items, textItems, { scoreBoost: 4 });
-                const textEngine = textResult?.searchMeta?.engine || "catalog-text";
-                provider = provider === "none"
-                    ? `catalog-text-${textEngine}`
-                    : `${provider}+catalog-text-${textEngine}`;
-            }
-        } catch (textErr) {
-            console.warn("[smart-image-search] catalog text search failed:", textErr?.message || textErr);
-        }
-    }
-
-    const embeddingFallbackEnabled = String(process.env.IMAGE_SEARCH_EMBEDDING_FALLBACK || "true").toLowerCase() === "true";
-
-    if (embeddingFallbackEnabled && items.length < pageLimit && mongoReady && catalogNeedles.length) {
-        try {
-            const embedPhrase = catalogNeedles.find((n) => n.includes(" ")) || catalogNeedles[0] || primaryKeyword;
-            const embedded = await searchCatalogByEmbeddingPhrase(embedPhrase, { limit: pageLimit });
-            if (embedded.length) {
-                mergeItems(items, embedded, { scoreBoost: 2 });
-                provider = provider === "none" ? "embedding" : `${provider}+embedding`;
-            }
-        } catch (embedErr) {
-            console.warn("[smart-image-search] embedding fallback failed:", embedErr?.message || embedErr);
-        }
-    }
-
-    if (items.length < minResults && (primaryKeyword || imageUrl) && is1688ImageSearchEnabled()) {
-        console.log("[smart-image-search] 1688 fallback enabled — querying external marketplace");
-        const retrievalTasks = [];
-
-        if (primaryKeyword || searchPhrase) {
-            retrievalTasks.push((async () => {
-                try {
-                    const alibabaItems = await withPromiseTimeout(
-                        searchAlibabaCatalogByKeywords({
-                            primaryKeyword: primaryKeyword || searchPhrase,
-                            keywords,
-                            pageLimit,
-                            pageSkip: skip,
-                            country,
-                        }),
-                        ALIBABA_SEARCH_BUDGET_MS,
-                        []
-                    );
-                    return { items: alibabaItems || [], scoreBoost: 3, tag: "alibaba-kw" };
-                } catch (error) {
-                    console.warn("[smart-image-search] alibaba-kw failed:", error?.message || error);
-                    return { items: [], scoreBoost: 0, tag: "alibaba-kw-error" };
-                }
-            })());
-        }
-
-        if (imageUrl) {
-            retrievalTasks.push((async () => {
-                try {
-                    const alibabaVisual = await withPromiseTimeout(
-                        runAlibabaImageSearch({
-                            imageUrl,
-                            pageLimit,
-                            pageSkip: skip,
-                            country,
-                        }),
-                        ALIBABA_SEARCH_BUDGET_MS,
-                        null
-                    );
-                    return {
-                        items: alibabaVisual?.items || [],
-                        scoreBoost: 5,
-                        tag: "alibaba-visual",
-                    };
-                } catch (error) {
-                    console.warn("[smart-image-search] alibaba-visual failed:", error?.message || error);
-                    return { items: [], scoreBoost: 0, tag: "alibaba-visual-error" };
-                }
-            })());
-        }
-
-        if (imageUrl && guessLocalImagePath(imageUrl) && hasLocalImageIndex()) {
-            retrievalTasks.push((async () => {
-                const localMatch = await runLocalVisualSearch({ imageAddress: imageUrl, pageLimit });
-                return {
-                    items: localMatch?.items || [],
-                    scoreBoost: 2.5,
-                    tag: "local",
-                };
-            })());
-        }
-
-        const settled = await Promise.allSettled(retrievalTasks);
-        settled.forEach((result) => {
-            if (result.status === "rejected") {
-                console.warn("[smart-image-search] retrieval rejected:", result.reason?.message || result.reason);
-                return;
-            }
-            if (result.status !== "fulfilled") return;
-            const { items: batch = [], scoreBoost = 0, tag } = result.value || {};
-            if (!batch.length) return;
-            mergeItems(items, batch, { scoreBoost });
-            provider = provider === "none" ? tag : `${provider}+${tag}`;
-        });
-    }
-
-    items = rankItems(items).slice(0, pageLimit);
-
-    if (!items.length) {
-        console.warn(
-            `[smart-image-search] no results keyword="${searchPhrase || primaryKeyword}" needles=${catalogNeedles.join("|")}`
+    // 1) Compare uploaded image to catalog product photos (pHash / live pool)
+    let localVisual = null;
+    if (imageUrl && isLocalImageSearchEnabled()) {
+        localVisual = await withPromiseTimeout(
+            runLocalVisualSearch({ imageAddress: imageUrl, pageLimit }),
+            VISUAL_SEARCH_BUDGET_MS,
+            null
         );
     }
 
-    let finalVision = vision;
-    if ((!finalVision?.primaryKeyword && !finalVision?.objectLabel) && items.length) {
-        finalVision = { ...(finalVision || {}), ...inferVisionFromItems(items) };
+    if (localVisual?.items?.length) {
+        mergeItems(items, normalizeCatalogItems(localVisual.items));
+        provider = localVisual.provider || "local-visual";
+        console.log(`[smart-image-search] visual matches=${localVisual.items.length}`);
+    }
+
+    const visualMatches = items.filter(isVisualMatchItem);
+    const visualCount = visualMatches.length;
+    const needKeywordFallback = !visualFirst || visualCount < minVisual;
+
+    // 2) Optional narrow expansion from top visual seed only (filtered for relevance)
+    if (visualCount > 0) {
+        const expansion = await expandFromVisualSeeds({
+            seeds: visualMatches,
+            pageLimit,
+            skip,
+            category,
+            fieldName,
+            fieldValue,
+        });
+        vision = expansion.vision || buildVisionFromVisualMatches(visualMatches);
+        relevanceContext = expansion.relevanceContext || buildRelevanceContext(vision, visualMatches);
+        if (expansion.catalogItems?.length) {
+            mergeItems(items, normalizeCatalogItems(expansion.catalogItems), { scoreBoost: 1 });
+            provider = `${provider}+visual-catalog`;
+        }
+        if (expansion.similarItems?.length) {
+            mergeItems(items, normalizeCatalogItems(expansion.similarItems), { scoreBoost: 0 });
+            provider = `${provider}+visual-similar`;
+        }
+        searchMode = "visual";
+    }
+
+    // 3) VL / text catalog path — only when visual matching did not find enough
+    if (needKeywordFallback) {
+        if (visualCount > 0) searchMode = "visual+keyword";
+        else searchMode = "keyword";
+
+        const kwVision = await resolveVision(imageUrl, fallbackSearch);
+        const primaryKeyword = kwVision?.primaryKeyword || kwVision?.searchPhrase || kwVision?.objectLabel || "";
+        const keywords = (kwVision?.keywords || []).slice(0, 6);
+        const searchPhrase = kwVision?.searchPhrase || primaryKeyword;
+
+        if (kwVision && !vision) {
+            vision = { ...kwVision, searchMode: "keyword" };
+            relevanceContext = buildRelevanceContext(vision, visualMatches);
+        } else if (kwVision) {
+            vision = {
+                ...vision,
+                fallbackKeyword: primaryKeyword,
+                fallbackSearchPhrase: searchPhrase,
+            };
+        }
+
+        if (primaryKeyword || searchPhrase) {
+            provider = provider === "none" ? (kwVision?.provider || "ai-vision") : `${provider}+keyword-fallback`;
+            const catalogNeedles = await require("../../products/services/catalogVocabularyService")
+                .expandNeedlesForImageSearch({
+                    needles: getBuildImageSearchCatalogNeedles()({
+                        primaryKeyword,
+                        searchPhrase,
+                        objectLabel: kwVision?.objectLabel || "",
+                        keywords,
+                        categoryHint: kwVision?.attributes?.category || "",
+                    }),
+                    primaryKeyword,
+                    searchPhrase,
+                    objectLabel: kwVision?.objectLabel || "",
+                    keywords,
+                    categoryHint: kwVision?.attributes?.category || "",
+                });
+
+            console.log(`[smart-image-search] keyword fallback needles: ${getRankImageSearchNeedles()(catalogNeedles).join("|")}`);
+
+            try {
+                const catalogResult = await getSearchCatalogForImage()({
+                    search: primaryKeyword || searchPhrase,
+                    limit: pageLimit,
+                    skip,
+                    category,
+                    fieldName,
+                    fieldValue,
+                    vision: kwVision,
+                });
+                const catalogItems = normalizeCatalogItems(catalogResult?.items || []);
+                if (catalogItems.length) {
+                    const filtered = filterSupplementalItems(catalogItems, relevanceContext);
+                    mergeItems(items, filtered, { scoreBoost: visualCount ? 0 : 6 });
+                    const engine = catalogResult?.engine || "catalog";
+                    provider = engine === "elasticsearch"
+                        ? `${provider}+catalog-es`
+                        : `${provider}+catalog-mongo`;
+                }
+            } catch (catalogErr) {
+                console.warn("[smart-image-search] keyword catalog failed:", catalogErr?.message || catalogErr);
+            }
+
+            if (embeddingPrimaryEnabled && mongoReady && (searchPhrase || primaryKeyword) && visualCount === 0) {
+                try {
+                    const embedded = await searchCatalogByEmbeddingPhrase(
+                        searchPhrase || primaryKeyword,
+                        { limit: pageLimit }
+                    );
+                    if (embedded.length) {
+                        mergeItems(items, embedded, { scoreBoost: visualCount ? 1 : 7 });
+                        provider = `${provider}+embedding-fallback`;
+                    }
+                } catch (embedErr) {
+                    console.warn("[smart-image-search] embedding fallback failed:", embedErr?.message || embedErr);
+                }
+            }
+
+            if (visualCount === 0 && items.length < pageLimit) {
+                try {
+                    const textResult = await getSearchCatalogByText()({
+                        search: primaryKeyword || searchPhrase,
+                        limit: pageLimit,
+                        skip,
+                        category,
+                        fieldName,
+                        fieldValue,
+                        fast: true,
+                        skipExternal: true,
+                    });
+                    const textItems = normalizeCatalogItems(textResult?.items || []);
+                    const filteredText = filterSupplementalItems(textItems, relevanceContext);
+                    if (filteredText.length) {
+                        mergeItems(items, filteredText, { scoreBoost: 2 });
+                        provider = `${provider}+catalog-text`;
+                    }
+                } catch (textErr) {
+                    console.warn("[smart-image-search] catalog text fallback failed:", textErr?.message || textErr);
+                }
+            }
+        }
+    }
+
+    // 4) 1688 only when visual search found nothing useful
+    if (imageUrl && is1688EnhancedImageSearchEnabled() && visualCount === 0 && items.length < minResults) {
+        try {
+            const enhanced1688 = await withPromiseTimeout(
+                runEnhanced1688ImageSearch({
+                    imageUrl,
+                    pageLimit,
+                    pageSkip: skip,
+                    country,
+                    imageKeywords: needKeywordFallback
+                        ? (vision?.fallbackKeyword || vision?.primaryKeyword || "")
+                        : "",
+                }),
+                ALIBABA_ENHANCED_BUDGET_MS,
+                null
+            );
+            if (enhanced1688?.items?.length) {
+                mergeItems(items, normalizeCatalogItems(enhanced1688.items), { scoreBoost: 3 });
+                provider = `${provider}+alibaba-enhanced`;
+            }
+        } catch (error) {
+            console.warn("[smart-image-search] 1688 enhanced failed:", error?.message || error);
+        }
+    }
+
+    if (items.length < minResults && imageUrl && is1688ImageSearchEnabled() && visualCount === 0) {
+        try {
+            const alibabaVisual = await withPromiseTimeout(
+                is1688EnhancedImageSearchEnabled()
+                    ? runEnhanced1688ImageSearch({ imageUrl, pageLimit, pageSkip: skip, country })
+                    : runAlibabaImageSearch({ imageUrl, pageLimit, pageSkip: skip, country }),
+                is1688EnhancedImageSearchEnabled() ? ALIBABA_ENHANCED_BUDGET_MS : ALIBABA_SEARCH_BUDGET_MS,
+                null
+            );
+            if (alibabaVisual?.items?.length) {
+                mergeItems(items, normalizeCatalogItems(alibabaVisual.items), { scoreBoost: 4 });
+                provider = `${provider}+alibaba-visual`;
+            }
+        } catch (error) {
+            console.warn("[smart-image-search] 1688 visual fallback failed:", error?.message || error);
+        }
+
+        if (needKeywordFallback && (vision?.fallbackKeyword || vision?.primaryKeyword)) {
+            try {
+                const alibabaItems = await withPromiseTimeout(
+                    searchAlibabaCatalogByKeywords({
+                        primaryKeyword: vision.fallbackKeyword || vision.primaryKeyword,
+                        keywords: vision.keywords || [],
+                        pageLimit,
+                        pageSkip: skip,
+                        country,
+                    }),
+                    ALIBABA_SEARCH_BUDGET_MS,
+                    []
+                );
+                if (alibabaItems?.length) {
+                    mergeItems(items, alibabaItems, { scoreBoost: 2 });
+                    provider = `${provider}+alibaba-kw`;
+                }
+            } catch (error) {
+                console.warn("[smart-image-search] alibaba-kw fallback failed:", error?.message || error);
+            }
+        }
+    }
+
+    relevanceContext = buildRelevanceContext(vision, items.filter(isVisualMatchItem));
+    items = rankItems(items);
+    const rerankVision = vision || buildVisionFromVisualMatches(items.filter(isVisualMatchItem));
+    if (items.length && rerankVision && needKeywordFallback) {
+        try {
+            items = await rerankImageSearchItems(items, rerankVision);
+        } catch (rerankErr) {
+            console.warn("[smart-image-search] rerank failed:", rerankErr?.message || rerankErr);
+        }
+    }
+    items = filterImageSearchResults(items, relevanceContext, { pageLimit });
+    items = prioritizeVisualMatches(items).slice(0, pageLimit);
+
+    if (!vision && items.length) {
+        vision = buildVisionFromVisualMatches(items.filter(isVisualMatchItem))
+            || inferVisionFromItems(items);
+        if (vision) searchMode = isVisualMatchItem(items[0]) ? "visual" : "keyword";
+    }
+    if (vision) vision.searchMode = searchMode;
+
+    if (!items.length) {
+        console.warn(
+            `[smart-image-search] no results mode=${searchMode} visual=${visualCount} keywordFallback=${needKeywordFallback}`
+        );
+    } else {
+        console.log(
+            `[smart-image-search] done mode=${searchMode} visual=${visualCount} items=${items.length} provider=${provider}`
+        );
     }
 
     return {
         items,
         recommendations: [],
         smartListing: null,
-        vision: finalVision,
+        vision,
         provider,
+        searchMode,
         total: items.length ? Math.max(items.length, 500) : 0,
     };
 };
@@ -436,6 +586,7 @@ module.exports = {
     resolveSmartImageSearch,
     resolveSearchRecommendations,
     searchSimilarByEmbedding,
+    buildImageSearchListMeta,
     primeVisionCache,
     getCachedVision,
 };

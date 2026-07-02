@@ -1,11 +1,19 @@
+const Product = require("../../../models/productsTable");
+const { isValidObjectId } = require("../../../validators/validator");
 const { buildProductCard } = require("./assistantEnrichmentService");
-const { isRestrictedCatalogProduct } = require("../../products/helpers/catalogVisibilityHelper");
+const { isBlockedCatalogProduct } = require("../../products/helpers/catalogVisibilityHelper");
 const {
     withTimeout,
     isFastMode,
     vectorSearchEnabled,
     needsProductSearch,
 } = require("./buyerAssistantUtils");
+const {
+    stripIntentPrefixes,
+    normalizeProductTypos,
+    extractProductTokens,
+} = require("./assistantIntentService");
+const { filterAssistantSearchProducts } = require("./assistantProductSearchHelper");
 
 const PRODUCT_SELECT =
     "name slug price compare_price short_description description status stock_status min_order_qty price_tiers offerId sku average_rating rating_count sold_count supplier_rating categories featured_image images";
@@ -103,24 +111,80 @@ const fetchProductById = async (productId) => {
     return product;
 };
 
-const searchProductsByNameNeedle = async (query, limit = 3) => {
-    const needle = String(query || "").trim();
-    if (!needle || needle.length < 3) return [];
+const escapeRegex = (value = "") =>
+    String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-    const words = needle.toLowerCase().split(/\s+/).filter((w) => w.length >= 3);
-    const phrase = words.length >= 2 ? words.slice(-2).join(" ") : needle.slice(0, 48);
+const searchProductsByNameNeedle = async (query, limit = 3) => {
+    const cleaned = normalizeProductTypos(stripIntentPrefixes(String(query || "").trim()));
+    if (!cleaned || cleaned.length < 2) return [];
+
+    const tokens = extractProductTokens(query);
+    const cap = Math.max(Number(limit) || 3, 1);
 
     try {
-        const items = await Product.find({
+        const { searchCatalogByText } = require("../../products/services/catalogSearchService");
+        const catalogResult = await withTimeout(
+            searchCatalogByText({
+                search: cleaned,
+                limit: cap,
+                skip: 1,
+                skipExternal: true,
+            }),
+            isFastMode() ? 3500 : 6000,
+            { items: [] }
+        );
+        if (catalogResult?.items?.length) {
+            await populateProductMedia(catalogResult.items);
+            return filterAssistantSearchProducts(catalogResult.items, cleaned, { limit: cap });
+        }
+    } catch (error) {
+        console.warn("[buyer-assistant] catalog name search failed:", error?.message || error);
+    }
+
+    const searchTokens = tokens.length ? tokens : cleaned.split(/\s+/).filter((w) => w.length >= 2);
+    if (!searchTokens.length) return [];
+
+    try {
+        const andClauses = searchTokens.map((token) => ({
+            name: { $regex: escapeRegex(token), $options: "i" },
+        }));
+
+        let items = await Product.find({
             status: "active",
-            name: { $regex: phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" },
+            $and: andClauses,
         })
             .select(PRODUCT_SELECT)
             .sort({ sold_count: -1, average_rating: -1 })
-            .limit(limit)
+            .limit(cap)
             .lean();
+
+        if (!items.length && searchTokens.length > 1) {
+            items = await Product.find({
+                status: "active",
+                name: {
+                    $regex: escapeRegex(searchTokens.slice(0, 2).join(".*")),
+                    $options: "i",
+                },
+            })
+                .select(PRODUCT_SELECT)
+                .sort({ sold_count: -1, average_rating: -1 })
+                .limit(cap)
+                .lean();
+        }
+
+        if (!items.length && searchTokens.length === 1) {
+            items = await Product.find({
+                status: "active",
+                name: { $regex: escapeRegex(searchTokens[0]), $options: "i" },
+            })
+                .select(PRODUCT_SELECT)
+                .sort({ sold_count: -1, average_rating: -1 })
+                .limit(cap)
+                .lean();
+        }
+
         await populateProductMedia(items);
-        return items;
+        return filterAssistantSearchProducts(items, cleaned, { limit: cap });
     } catch {
         return [];
     }
@@ -138,7 +202,7 @@ const resolveProductChunksForQuery = async ({
     const cap = Math.min(Math.max(Number(limit) || 3, 1), 4);
 
     const ingest = (product, score) => {
-        if (isRestrictedCatalogProduct(product)) return;
+        if (isBlockedCatalogProduct(product)) return;
         const chunk = buildProductChunkFromDoc(product, score);
         if (!chunk) return;
         const key = chunk.productId || chunk.title;

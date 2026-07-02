@@ -13,19 +13,31 @@ const path = require("path");
 
 const { searchGoogleImageKeywords } = require("../services/googleImageSearch");
 
-const { searchLocalImage, searchLocalImageLive } = require("../services/localImageSearch");
+const { searchLocalImage, searchLocalImageLive, isLocalImageSearchEnabled } = require("../services/localImageSearch");
 
 const {
 
     searchImageQuery,
 
+    searchDomesticSimilarImageOffers,
+
+    searchSameOffers,
+
+    searchRelatedRecommend,
+
+    searchSimilarSupplyOffers,
+
     extractImageSearchOffers,
+
+    extractDomesticImageSearchOffers,
 
     mapOfferToProductStub,
 
+    isConfigured: isAlibabaConfigured,
+
 } = require("../services/alibaba");
 
-const { resolveAlibabaImageSearchInput } = require("./resolveAlibabaImageInput");
+const { resolveAlibabaImageSearchInput, buildDomesticImageParams } = require("./resolveAlibabaImageInput");
 
 const esProductService = require("../services/esProductService");
 
@@ -41,6 +53,60 @@ const ALIBABA_SEARCH_BUDGET_MS = Math.min(
     Math.max(Number(process.env.IMAGE_SEARCH_ALIBABA_BUDGET_MS || 18000), 5000),
     45000
 );
+const ALIBABA_ENHANCED_BUDGET_MS = Math.min(
+    Math.max(
+        Number(process.env.IMAGE_SEARCH_1688_ENHANCED_BUDGET_MS || ALIBABA_SEARCH_BUDGET_MS * 2),
+        ALIBABA_SEARCH_BUDGET_MS
+    ),
+    60000
+);
+
+const is1688EnhancedImageSearchEnabled = () => {
+    if (!isAlibabaConfigured()) return false;
+    const enhanced = String(process.env.IMAGE_SEARCH_1688_ENHANCED ?? "false").toLowerCase();
+    return enhanced === "1" || enhanced === "true";
+};
+
+const merge1688OfferRows = (bundles = []) => {
+    const merged = [];
+    const seen = new Set();
+    (bundles || []).forEach(({ rows = [], source, baseScore = 0 }) => {
+        rows.forEach((row, index) => {
+            const offerId = String(row?.offerId || row?.offer_id || "").trim();
+            if (!offerId || seen.has(offerId)) return;
+            seen.add(offerId);
+            merged.push({
+                ...row,
+                _1688Source: source,
+                _1688RankScore: baseScore - index * 0.05,
+            });
+        });
+    });
+    merged.sort((a, b) => (b._1688RankScore || 0) - (a._1688RankScore || 0));
+    return merged;
+};
+
+const attach1688RankScores = (items = [], rankedOffers = []) => {
+    const rankByOffer = new Map(
+        rankedOffers.map((row) => [String(row?.offerId || "").trim(), Number(row?._1688RankScore || 0)])
+    );
+    const sourceByOffer = new Map(
+        rankedOffers.map((row) => [String(row?.offerId || "").trim(), row?._1688Source || "imageQuery"])
+    );
+
+    return (items || []).map((item) => {
+        const offerId = String(item?.offerId || "").trim();
+        const rankScore = rankByOffer.get(offerId) || 0;
+        if (!rankScore) return item;
+        const source = sourceByOffer.get(offerId) || "imageQuery";
+        return {
+            ...item,
+            match_score: Number((rankScore + Number(item.match_score || 0)).toFixed(4)),
+            match_type: item.match_type || `alibaba_${source}`,
+            alibaba_source: source,
+        };
+    }).sort((a, b) => Number(b.match_score || 0) - Number(a.match_score || 0));
+};
 
 const looksLikeObjectId = (value) => /^[a-fA-F0-9]{24}$/.test(String(value || "").trim());
 
@@ -160,6 +226,44 @@ const mapProductsByOfferOrder = async (offerIds = []) => {
 
     return items;
 
+};
+
+
+
+const VISUAL_MATCH_SCORE_BASE = Number(process.env.LOCAL_IMAGE_SEARCH_SCORE_BASE || 8);
+
+const attachVisualMatchScores = (items = [], visualResults = []) => {
+    const scoreByOffer = new Map(
+        (visualResults || []).map((row) => [
+            String(row?.offerId || "").trim(),
+            Number(row?.similarity || 0),
+        ])
+    );
+
+    return (items || []).map((item) => {
+        const offerId = String(item?.offerId || "").trim();
+        const similarity = scoreByOffer.get(offerId) || 0;
+        if (!similarity) return item;
+        return {
+            ...item,
+            similarity_score: Number(similarity.toFixed(4)),
+            match_score: Number((VISUAL_MATCH_SCORE_BASE + similarity * 10).toFixed(4)),
+            match_type: "visual",
+        };
+    });
+};
+
+const mapProductsByVisualResults = async (visualResults = [], pageLimit = 32) => {
+    const offerIds = (visualResults || [])
+        .map((row) => String(row?.offerId || "").trim())
+        .filter(Boolean);
+    if (!offerIds.length) return [];
+
+    const items = attachVisualMatchScores(
+        await mapProductsByOfferOrder(offerIds),
+        visualResults
+    );
+    return items.slice(0, pageLimit);
 };
 
 
@@ -341,22 +445,22 @@ const buildLocalVision = (matchedItems = []) => {
 
 const runLocalVisualSearch = async ({ imageAddress, pageLimit = 32 } = {}) => {
     const imageUrl = String(imageAddress || "").trim();
-    if (!imageUrl) return null;
+    if (!imageUrl || !isLocalImageSearchEnabled()) return null;
 
     const indexPath = process.env.LOCAL_IMAGE_SEARCH_INDEX
         || path.resolve(process.cwd(), "data", "image-search", "products.index.faiss");
     const hasIndex = fs.existsSync(indexPath);
-    const liveEnabled = String(process.env.LOCAL_IMAGE_SEARCH_LIVE_ENABLED ?? "false").toLowerCase() === "true";
+    const liveEnabled = String(process.env.LOCAL_IMAGE_SEARCH_LIVE_ENABLED ?? "true").toLowerCase() !== "false";
 
     try {
         if (hasIndex) {
             const localImageSearch = await searchLocalImage({ imageAddress: imageUrl, limit: pageLimit });
-            if (localImageSearch?.offerIds?.length) {
-                const items = (await mapProductsByOfferOrder(localImageSearch.offerIds)).slice(0, pageLimit);
+            if (localImageSearch?.results?.length) {
+                const items = await mapProductsByVisualResults(localImageSearch.results, pageLimit);
                 if (items.length) {
                     return {
                         items,
-                        provider: "local",
+                        provider: localImageSearch.provider || "local-visual",
                         vision: buildLocalVision(items),
                         total: items.length,
                     };
@@ -367,34 +471,49 @@ const runLocalVisualSearch = async ({ imageAddress, pageLimit = 32 } = {}) => {
         console.warn("[image-search] Local index failed:", localErr?.message || localErr);
     }
 
-    if (!liveEnabled) {
+    if (!liveEnabled || !isMongoConnected()) {
         return null;
     }
 
     try {
+        const livePool = Math.min(
+            Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_LIVE_CANDIDATES || 120), 20),
+            300
+        );
         const liveCandidates = await _model.Product.find({ status: "active" })
-            .select("offerId name featured_image")
-            .populate({ path: "featured_image", select: "link -_id" })
-            .sort({ date_created_utc: -1 })
-            .limit(8)
+            .select("offerId name featured_image images")
+            .sort({ sold_count: -1, date_created_utc: -1 })
+            .limit(livePool)
             .lean();
+
+        const candidateRows = [];
+        liveCandidates.forEach((product) => {
+            const offerId = String(product?.offerId || "").trim();
+            if (!offerId) return;
+            const urls = [];
+            const addUrl = (value) => {
+                const url = typeof value === "string" ? value.trim() : "";
+                if (url && !urls.includes(url)) urls.push(url);
+            };
+            addUrl(product?.featured_image);
+            (product?.images || []).forEach(addUrl);
+            urls.slice(0, 3).forEach((imageUrl) => {
+                candidateRows.push({ offerId, name: product?.name || "", imageUrl });
+            });
+        });
 
         const localLive = await searchLocalImageLive({
             imageAddress: imageUrl,
             limit: pageLimit,
-            candidates: liveCandidates.map((p) => ({
-                offerId: p?.offerId,
-                name: p?.name,
-                imageUrl: typeof p?.featured_image === "string" ? p.featured_image : p?.featured_image?.link,
-            })),
+            candidates: candidateRows,
         });
 
-        if (localLive?.offerIds?.length) {
-            const items = (await mapProductsByOfferOrder(localLive.offerIds)).slice(0, pageLimit);
+        if (localLive?.results?.length) {
+            const items = await mapProductsByVisualResults(localLive.results, pageLimit);
             if (items.length) {
                 return {
                     items,
-                    provider: "local",
+                    provider: localLive.provider || "local-live",
                     vision: buildLocalVision(items),
                     total: items.length,
                 };
@@ -493,6 +612,144 @@ const runAlibabaImageSearch = async ({
 
 };
 
+/** Multi-API 1688 image search: imageQuery + domestic similar + sameOffers + related + supply. */
+const runEnhanced1688ImageSearch = async ({
+    imageUrl,
+    pageLimit,
+    pageSkip,
+    country,
+    imageKeywords = "",
+} = {}) => {
+    const imageInput = await resolveAlibabaImageSearchInput(imageUrl);
+    if (!imageInput && !String(imageUrl || "").trim()) {
+        return null;
+    }
+
+    const beginPage = Math.max(1, Number(pageSkip) || 1);
+    const keywordHint = String(imageKeywords || "").trim();
+    const domesticParams = buildDomesticImageParams(imageInput, imageUrl, keywordHint);
+
+    const [imageQueryResult, domesticResult] = await Promise.all([
+        imageInput
+            ? withPromiseTimeout(
+                searchImageQuery({
+                    ...imageInput,
+                    beginPage,
+                    pageSize: pageLimit,
+                    country: String(country || "en").trim() || "en",
+                    imageKeywords: keywordHint,
+                }),
+                ALIBABA_ENHANCED_BUDGET_MS,
+                null
+            )
+            : Promise.resolve(null),
+        domesticParams
+            ? withPromiseTimeout(
+                searchDomesticSimilarImageOffers(domesticParams),
+                ALIBABA_ENHANCED_BUDGET_MS,
+                null
+            )
+            : Promise.resolve(null),
+    ]);
+
+    const imageQueryOffers = extractImageSearchOffers(imageQueryResult || {});
+    const domesticOffers = extractDomesticImageSearchOffers(domesticResult || {});
+
+    const bundles = [
+        { rows: imageQueryOffers, source: "imageQuery", baseScore: 10 },
+        { rows: domesticOffers, source: "domesticSimilar", baseScore: 9 },
+    ];
+
+    const seedOfferId = String(
+        imageQueryOffers[0]?.offerId || domesticOffers[0]?.offerId || ""
+    ).trim();
+
+    if (seedOfferId) {
+        const expandSize = Math.min(Math.max(pageLimit, 10), 20);
+        const [sameResult, relatedResult, supplyResult] = await Promise.all([
+            withPromiseTimeout(
+                searchSameOffers({
+                    offerId: seedOfferId,
+                    ...(imageInput || {}),
+                    keyword: keywordHint,
+                    beginPage,
+                    pageSize: expandSize,
+                    country,
+                }),
+                ALIBABA_ENHANCED_BUDGET_MS,
+                null
+            ),
+            withPromiseTimeout(
+                searchRelatedRecommend({ offerId: seedOfferId, pageSize: expandSize, country }),
+                ALIBABA_ENHANCED_BUDGET_MS,
+                null
+            ),
+            withPromiseTimeout(
+                searchSimilarSupplyOffers({ offerId: seedOfferId, pageSize: expandSize, country }),
+                ALIBABA_ENHANCED_BUDGET_MS,
+                null
+            ),
+        ]);
+
+        bundles.push(
+            { rows: extractImageSearchOffers(sameResult || {}), source: "sameOffers", baseScore: 8 },
+            { rows: extractImageSearchOffers(supplyResult || {}), source: "supplySimilar", baseScore: 7 },
+            { rows: extractImageSearchOffers(relatedResult || {}), source: "relatedRecommend", baseScore: 6 },
+        );
+    }
+
+    const rankedOffers = merge1688OfferRows(bundles);
+    if (!rankedOffers.length) {
+        const activeSources = bundles.filter((b) => b.rows.length).map((b) => b.source);
+        console.warn(
+            "[1688] enhanced image search returned no offers",
+            activeSources.length ? `partial sources=${activeSources.join(",")}` : ""
+        );
+        return null;
+    }
+
+    const items = attach1688RankScores(
+        await mergeCatalogAndStubs(rankedOffers, pageLimit),
+        rankedOffers
+    );
+
+    const sources = bundles
+        .filter((b) => b.rows.length)
+        .map((b) => ({ source: b.source, count: b.rows.length }));
+
+    console.log(
+        `[1688] enhanced image search offers=${rankedOffers.length} catalog=${items.length} sources=${sources.map((s) => `${s.source}:${s.count}`).join(",")}`
+    );
+
+    const topSubject = String(
+        rankedOffers[0]?.subjectTrans || rankedOffers[0]?.subject || items[0]?.name || ""
+    ).trim();
+    const keywords = rankedOffers
+        .slice(0, 5)
+        .map((row) => String(row?.subjectTrans || row?.subject || "").trim())
+        .filter(Boolean);
+
+    const totalRecords = Number(
+        imageQueryResult?.totalRecords
+        ?? imageQueryResult?.data?.totalRecords
+        ?? items.length
+    ) || items.length;
+
+    return {
+        items: items.slice(0, pageLimit),
+        provider: "alibaba-enhanced",
+        vision: topSubject ? {
+            provider: "alibaba-image-search",
+            objectLabel: topSubject,
+            primaryKeyword: topSubject,
+            keywords,
+            searchPhrase: topSubject,
+        } : null,
+        total: totalRecords,
+        sources,
+    };
+};
+
 
 
 /**
@@ -537,14 +794,14 @@ const runImageSearchPipeline = async ({
 
 
 
-    if (guessLocalImagePath(imageAddress)) {
+    if (guessLocalImagePath(imageAddress) || isLocalImageSearchEnabled()) {
         try {
             const localMatch = await runLocalVisualSearch({ imageAddress, pageLimit });
             if (localMatch?.items?.length) {
                 return localMatch;
             }
         } catch (localEarlyErr) {
-            console.warn("[image-search] Local upload visual match failed:", localEarlyErr?.message || localEarlyErr);
+            console.warn("[image-search] Local visual match failed:", localEarlyErr?.message || localEarlyErr);
         }
     }
 
@@ -556,17 +813,19 @@ const runImageSearchPipeline = async ({
 
     try {
 
-        const alibabaSearch = await runAlibabaImageSearch({
-
-            imageUrl: imageAddress,
-
-            pageLimit,
-
-            pageSkip,
-
-            country,
-
-        });
+        const alibabaSearch = is1688EnhancedImageSearchEnabled()
+            ? await runEnhanced1688ImageSearch({
+                imageUrl: imageAddress,
+                pageLimit,
+                pageSkip,
+                country,
+            })
+            : await runAlibabaImageSearch({
+                imageUrl: imageAddress,
+                pageLimit,
+                pageSkip,
+                country,
+            });
 
         if (alibabaSearch?.items?.length) {
 
@@ -809,6 +1068,8 @@ const searchAlibabaCatalogByKeywords = async ({
 module.exports = {
     runImageSearchPipeline,
     runAlibabaImageSearch,
+    runEnhanced1688ImageSearch,
+    is1688EnhancedImageSearchEnabled,
     runLocalVisualSearch,
     searchAlibabaCatalogByKeywords,
     resolveActiveCatalogItems,

@@ -4,9 +4,10 @@ const fs = require("fs");
 const os = require("os");
 const { guessLocalImagePath } = require("../../ai/helpers/resolveVisionImageInput");
 
-const LOCAL_IMAGE_SEARCH_ENABLED =
-    Boolean(env?.localImageSearch?.ENABLED) ||
-    String(process.env.LOCAL_IMAGE_SEARCH_ENABLED || "").toLowerCase() === "true";
+const LOCAL_IMAGE_SEARCH_ENABLED_DEFAULT =
+    String(process.env.LOCAL_IMAGE_SEARCH_ENABLED ?? "true").toLowerCase() !== "false"
+    && String(process.env.LOCAL_IMAGE_SEARCH_ENABLED ?? "true").toLowerCase() !== "0";
+
 const LOCAL_IMAGE_SEARCH_PYTHON_BIN =
     env?.localImageSearch?.PYTHON_BIN ||
     process.env.LOCAL_IMAGE_SEARCH_PYTHON_BIN ||
@@ -23,8 +24,28 @@ const LOCAL_IMAGE_SEARCH_META =
     env?.localImageSearch?.META_PATH ||
     process.env.LOCAL_IMAGE_SEARCH_META ||
     path.resolve(process.cwd(), "data", "image-search", "products.meta.json");
-const LOCAL_IMAGE_SEARCH_LIVE_CANDIDATES =
-    Number(process.env.LOCAL_IMAGE_SEARCH_LIVE_CANDIDATES || 80);
+const LOCAL_IMAGE_SEARCH_LIVE_CANDIDATES = Math.min(
+    Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_LIVE_CANDIDATES || 120), 20),
+    300
+);
+const LOCAL_IMAGE_SEARCH_MIN_SIMILARITY = Math.min(
+    Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_MIN_SIMILARITY || 0.38), 0),
+    1
+);
+
+const isLocalImageSearchEnabled = () => {
+    const flag = String(process.env.LOCAL_IMAGE_SEARCH_ENABLED ?? "true").toLowerCase();
+    if (flag === "0" || flag === "false") return false;
+    return LOCAL_IMAGE_SEARCH_ENABLED_DEFAULT;
+};
+
+const hasLocalImageIndex = () => {
+    try {
+        return fs.existsSync(LOCAL_IMAGE_SEARCH_INDEX);
+    } catch (_) {
+        return false;
+    }
+};
 
 const execFileAsync = (bin, args, options = {}) =>
     new Promise((resolve, reject) => {
@@ -47,8 +68,28 @@ const buildQueryArgs = (imageAddress = "") => {
     return ["--query-url", String(imageAddress || "").trim()];
 };
 
+const dedupeByOfferMaxSimilarity = (results = []) => {
+    const best = new Map();
+    (results || []).forEach((entry) => {
+        const offerId = String(entry?.offerId || "").trim();
+        const similarity = Number(entry?.similarity || 0);
+        if (!offerId) return;
+        const prev = best.get(offerId);
+        if (!prev || similarity > prev.similarity) {
+            best.set(offerId, { offerId, similarity });
+        }
+    });
+    return [...best.values()].sort((a, b) => b.similarity - a.similarity);
+};
+
+const filterByMinSimilarity = (results = []) => {
+    const min = LOCAL_IMAGE_SEARCH_MIN_SIMILARITY;
+    const filtered = (results || []).filter((row) => Number(row?.similarity || 0) >= min);
+    return filtered.length ? filtered : (results || []).slice(0, 3);
+};
+
 const searchLocalImage = async ({ imageAddress, limit = 32 }) => {
-    if (!LOCAL_IMAGE_SEARCH_ENABLED) return null;
+    if (!isLocalImageSearchEnabled() || !hasLocalImageIndex()) return null;
     if (!imageAddress || typeof imageAddress !== "string") return null;
 
     const args = [
@@ -56,7 +97,7 @@ const searchLocalImage = async ({ imageAddress, limit = 32 }) => {
         "search",
         ...buildQueryArgs(imageAddress),
         "--top-k",
-        String(Math.max(1, Number(limit) || 32)),
+        String(Math.max(1, Number(limit) || 32) * 3),
         "--index-path",
         LOCAL_IMAGE_SEARCH_INDEX,
         "--meta-path",
@@ -72,12 +113,15 @@ const searchLocalImage = async ({ imageAddress, limit = 32 }) => {
         const parsed = JSON.parse(String(stdout || "{}"));
         if (!Array.isArray(parsed?.results)) return null;
 
-        const offerIds = parsed.results
-            .map((entry) => String(entry?.offerId || "").trim())
-            .filter(Boolean);
+        const results = filterByMinSimilarity(
+            dedupeByOfferMaxSimilarity(parsed.results)
+        ).slice(0, Math.max(1, Number(limit) || 32));
+
+        const offerIds = results.map((entry) => entry.offerId).filter(Boolean);
 
         return {
             provider: "local",
+            results,
             offerIds,
             total: Number(parsed?.count || offerIds.length || 0),
         };
@@ -88,13 +132,11 @@ const searchLocalImage = async ({ imageAddress, limit = 32 }) => {
 };
 
 const searchLocalImageLive = async ({ imageAddress, candidates = [], limit = 32 }) => {
-    if (!LOCAL_IMAGE_SEARCH_ENABLED) return null;
+    if (!isLocalImageSearchEnabled()) return null;
     if (!imageAddress || typeof imageAddress !== "string") return null;
 
     const trimmedCandidates = (candidates || [])
-        .slice(0, Number.isFinite(LOCAL_IMAGE_SEARCH_LIVE_CANDIDATES) && LOCAL_IMAGE_SEARCH_LIVE_CANDIDATES > 0
-            ? LOCAL_IMAGE_SEARCH_LIVE_CANDIDATES
-            : 80)
+        .slice(0, LOCAL_IMAGE_SEARCH_LIVE_CANDIDATES)
         .map((c) => ({
             offerId: String(c?.offerId || "").trim(),
             imageUrl: String(c?.imageUrl || "").trim(),
@@ -113,7 +155,7 @@ const searchLocalImageLive = async ({ imageAddress, candidates = [], limit = 32 
             "search-live",
             ...buildQueryArgs(imageAddress),
             "--top-k",
-            String(Math.max(1, Number(limit) || 32)),
+            String(Math.max(1, Number(limit) || 32) * 2),
             "--products-json",
             tempPath,
         ];
@@ -125,12 +167,15 @@ const searchLocalImageLive = async ({ imageAddress, candidates = [], limit = 32 
         const parsed = JSON.parse(String(stdout || "{}"));
         if (!Array.isArray(parsed?.results)) return null;
 
-        const offerIds = parsed.results
-            .map((entry) => String(entry?.offerId || "").trim())
-            .filter(Boolean);
+        const results = filterByMinSimilarity(
+            dedupeByOfferMaxSimilarity(parsed.results)
+        ).slice(0, Math.max(1, Number(limit) || 32));
+
+        const offerIds = results.map((entry) => entry.offerId).filter(Boolean);
 
         return {
             provider: "local-live",
+            results,
             offerIds,
             total: Number(parsed?.count || offerIds.length || 0),
         };
@@ -142,4 +187,10 @@ const searchLocalImageLive = async ({ imageAddress, candidates = [], limit = 32 
     }
 };
 
-module.exports = { searchLocalImage, searchLocalImageLive };
+module.exports = {
+    isLocalImageSearchEnabled,
+    hasLocalImageIndex,
+    searchLocalImage,
+    searchLocalImageLive,
+    LOCAL_IMAGE_SEARCH_MIN_SIMILARITY,
+};

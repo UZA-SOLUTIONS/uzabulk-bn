@@ -1,0 +1,17 @@
+# Optional Docker runner for the nightly catalog AI batch job.
+# MongoDB must be reachable from the container (Docker Desktop: host.docker.internal in MONGO_URI).
+#
+#   npm run catalog-ai:nightly:docker
+
+services:
+  catalog-ai-nightly:
+    image: node:22-bookworm-slim
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+    volumes:
+      - .:/app
+    command: ["node", "scripts/nightlyCatalogAi.js"]
+    profiles: ["catalog-ai"]

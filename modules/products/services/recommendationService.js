@@ -14,7 +14,7 @@ const {
     getSeedNumber,
     fetchUsableProducts,
 } = require("./catalogRotationService");
-const { filterCatalogProducts, usableCatalogSort } = require("../helpers/catalogVisibilityHelper");
+const { balanceCatalogProducts, usableCatalogSort } = require("../helpers/catalogVisibilityHelper");
 const {
     applyEmbeddingBoost,
     getEmbeddingDiscoveryProducts,
@@ -208,7 +208,7 @@ const getCandidateProducts = async ({ behaviors = [], limit = 250, category = nu
 
     if (preferredCategoryIds.length) {
         const relatedOffset = getSeedNumber(`${seedKey}:${preferredCategoryIds.join(",")}`) % 60;
-        const related = filterCatalogProducts(await populateProductCards(
+        const related = balanceCatalogProducts(await populateProductCards(
             Product.find({
                 status: "active",
                 categories: { $in: preferredCategoryIds },
@@ -403,7 +403,7 @@ const usePythonRecommender = () =>
     || process.env.RECOMMENDER_USE_PYTHON === "true";
 
 const finalizeHomeRecommendations = (products, limit) => (
-    filterCatalogProducts(diversifyByCategory(products, { maxPerCategory: 3, limit })).slice(0, limit)
+    balanceCatalogProducts(diversifyByCategory(products, { maxPerCategory: 3, limit })).slice(0, limit)
 );
 
 const getRecommendedProducts = async (req, options = {}) => {
@@ -418,7 +418,7 @@ const getRecommendedProducts = async (req, options = {}) => {
                 contextKey: String(options.refresh || options.contextKey || "").slice(0, 80),
             });
             if (result.items?.length) {
-                return filterCatalogProducts(result.items).slice(0, limit);
+                return balanceCatalogProducts(result.items).slice(0, limit);
             }
         } catch (error) {
             console.warn("Personalized homepage feed failed, using legacy recommender:", error.message);
@@ -544,7 +544,7 @@ const getPersonalizedProductPage = async (req, { limit, page = 1, skip, seedKey 
     );
 
     if (Array.isArray(pool) && pool.length) {
-        const mixed = filterCatalogProducts(diversifyByCategory(
+        const mixed = balanceCatalogProducts(diversifyByCategory(
             pool.filter((product) => !recentIds.has(String(product._id))),
             { maxPerCategory: 3, limit: safeLimit }
         ));
@@ -595,7 +595,7 @@ const getPersonalizedNewArrivalsPage = async (req, { limit, page = 1, skip, seed
 
     let candidates = [];
     if (preferredCategoryIds.length) {
-        candidates = filterCatalogProducts(await populateProductCards(
+        candidates = balanceCatalogProducts(await populateProductCards(
             Product.find({
                 status: "active",
                 categories: { $in: preferredCategoryIds },
@@ -621,7 +621,7 @@ const getPersonalizedNewArrivalsPage = async (req, { limit, page = 1, skip, seed
         });
     }
 
-    const ranked = filterCatalogProducts(scoreInNode(behaviors, dedupeProductList(candidates)));
+    const ranked = balanceCatalogProducts(scoreInNode(behaviors, dedupeProductList(candidates)));
     const start = (safePage - 1) * safeLimit;
     const items = ranked.slice(start, start + safeLimit);
     const hasMore = start + safeLimit < ranked.length;

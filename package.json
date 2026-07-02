@@ -31,6 +31,8 @@
     "smart-listing:test": "node scripts/testSmartListing.js",
     "smart-listing:backfill": "node scripts/backfillAutoSmartListing.js",
     "embeddings:backfill": "node scripts/backfillProductEmbeddings.js",
+    "catalog-ai:nightly": "node scripts/nightlyCatalogAi.js",
+    "catalog-ai:nightly:docker": "docker compose -f docker-compose.catalog-ai.yml --profile catalog-ai run --rm catalog-ai-nightly",
     "dev": "pm2 start ecosystem.config.js --env=development",
     "prod": "NODE_ENV=production node server.js"
   },

@@ -4,6 +4,8 @@ const controller = require('./controllers');
 const upload = require("../../lib/awsimage-upload");
 const { authorization, commonAuthentication, setPagination, exchangeCurrency } = require("../../middleware");
 const { productValidate } = require("./middleware");
+router.get('/description-image/:encodedUrl([A-Za-z0-9_-]+)', controller.proxyDescriptionImage);
+router.get('/description-image', controller.proxyDescriptionImage);
 router.get('/category-thumbnails', commonAuthentication, exchangeCurrency, controller.categoryThumbnails);
 router.get('/searchAutocomplete', commonAuthentication, exchangeCurrency, controller.searchAutocomplete);
 router.get('/top-ranking', setPagination, exchangeCurrency, controller.topRankingProducts);

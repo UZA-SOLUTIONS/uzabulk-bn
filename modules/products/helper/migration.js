@@ -55,7 +55,7 @@ const updateProductDetails = async (product, productDetails) => {
                 type: productSkuInfos?.length ? "variable" : "simple",
                 isFeatured: "no",
                 short_description: "",
-                description: description || "",
+                ...(description ? { description } : {}),
                 sku: "", // Consider adding SKU logic if needed
                 price: price_tiers[0]?.price,
                 compare_price: 0,

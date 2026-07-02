@@ -46,13 +46,18 @@ const buildProductEmbeddingText = (product = {}) => {
     }
 
     const seoKeywords = product.seoSettings?.metaKeywords || "";
+    const categoryNames = Array.isArray(product.categories)
+        ? product.categories
+            .map((row) => (typeof row === "object" && row?.catName ? row.catName : null))
+            .filter(Boolean)
+        : [];
     const parts = [
         product.name,
         product.short_description,
         product.description,
         attributeText,
         seoKeywords,
-        Array.isArray(product.categories) ? product.categories.join(" ") : "",
+        categoryNames.length ? categoryNames.join(" ") : "",
         product.pricingType,
     ].filter(Boolean);
     return parts.join(" ").slice(0, 8000);

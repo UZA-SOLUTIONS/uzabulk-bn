@@ -13,6 +13,13 @@ const { getProductDetail, searchImageQuery } = require('../services/alibaba');
 const { searchGoogleImageKeywords } = require('../services/googleImageSearch');
 const { searchLocalImage, searchLocalImageLive } = require('../services/localImageSearch');
 const { updateProductDetails } = require('../helper/migration');
+const { syncVariationsFromFeatureAttribute } = require('../helper/featureAttributeVariations');
+const {
+    fetchExternalImageStream,
+    getApiPublicBase,
+    resolveProxyImageSource,
+    rewriteDescriptionImageHtml,
+} = require('../helper/descriptionImageProxy');
 const {
     getRecommendedProducts,
     getPersonalizedProductPage,
@@ -36,13 +43,18 @@ const {
     buildMongoCategoryMatch,
 } = require('../services/categoryFilterHelper');
 const { runImageSearchPipeline, searchAlibabaCatalogByKeywords } = require('../helper/imageSearchPipeline');
-const { resolveSmartImageSearch } = require('../../ai/services/smartImageSearchService');
+const { resolveSmartImageSearch, buildImageSearchListMeta } = require('../../ai/services/smartImageSearchService');
 const { expandSearchQuery } = require('../../ai/services/aiTextSearchService');
 const { isElasticsearchReachable } = require('../../../elasticsearch/availability');
-const { filterCatalogProducts } = require('../helpers/catalogVisibilityHelper');
+const { balanceCatalogProducts, filterCatalogProducts } = require('../helpers/catalogVisibilityHelper');
 const { getSeedNumber } = require('../services/catalogRotationService');
 
-const visibleCatalogItems = (items = []) => filterCatalogProducts(Array.isArray(items) ? items : []);
+const visibleCatalogItems = (items = [], options = {}) => (
+    balanceCatalogProducts(Array.isArray(items) ? items : [], {
+        maxSensitive: 2,
+        ...options,
+    })
+);
 
 const looksLikeObjectId = (value) => /^[a-fA-F0-9]{24}$/.test(String(value || "").trim());
 const escapeRegex = (value = "") => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -80,6 +92,48 @@ const shouldRefreshSupplierProduct = (product) => {
 
     const ageHours = (Date.now() - lastUpdated.getTime()) / (1000 * 60 * 60);
     return ageHours >= 24;
+};
+
+/** Supplier listings missing SKU options (sizes, colors, etc.) need an immediate refresh. */
+const needsSupplierVariationSync = (product, item) => {
+    const hasVariations = Array.isArray(item?.variations) && item.variations.length > 0;
+    const hasAttributeTerms = Array.isArray(item?.attributes)
+        && item.attributes.some((attr) => Array.isArray(attr?.terms) && attr.terms.length > 0);
+    if (hasVariations && hasAttributeTerms) return false;
+    if (product?.offerId) return true;
+    return Array.isArray(item?.featureAttribute) && item.featureAttribute.length > 0;
+};
+
+const syncSupplierProductNow = async (product) => {
+    const productId = product?._id;
+    const offerId = product?.offerId;
+    if (!productId) return false;
+
+    if (offerId) {
+        try {
+            const productDetails = await getProductDetail(offerId);
+            if (productDetails?.status && productDetails?.status !== "published") {
+                await module.exports.productArchived(productId);
+                return false;
+            }
+            const skuCount = Array.isArray(productDetails?.productSkuInfos)
+                ? productDetails.productSkuInfos.length
+                : 0;
+            if (productDetails?.status === "published" && skuCount > 0) {
+                await updateProductDetails(product, productDetails);
+                return true;
+            }
+        } catch (error) {
+            console.warn(`Supplier product sync failed for offerId=${offerId}:`, error.message);
+        }
+    }
+
+    const full = await _model.Product.findById(productId)
+        .select("featureAttribute price stock_quantity stock_status manage_stock vendor offerId")
+        .lean();
+    if (!full?.featureAttribute?.length) return false;
+
+    return syncVariationsFromFeatureAttribute(full);
 };
 
 const syncSupplierProductInBackground = (product) => {
@@ -516,7 +570,8 @@ module.exports = {
                 skipExternal: true,
             });
             const items = visibleCatalogItems(
-                await hydrateAutocompleteImages(aiSearch.items || [])
+                await hydrateAutocompleteImages(aiSearch.items || []),
+                { search: String(search || "").trim() }
             );
 
             return res.success("RECORD_FOUND", items, {
@@ -615,7 +670,9 @@ module.exports = {
                             }
                         })
                     );
-                    items = visibleCatalogItems(await resolveActiveCatalogItems(rawItems));
+                    items = visibleCatalogItems(await resolveActiveCatalogItems(rawItems), {
+                        search: String(search || "").trim(),
+                    });
                     total = esTotal;
                 } catch (error) {
                     const mongoQuery = getMongoListQuery({ category, search });
@@ -623,7 +680,7 @@ module.exports = {
                         await Product.getNewArrivalsProducts(mongoQuery, { ...req.paginationOptions, limit: limit + 1 }),
                         limit
                     );
-                    items = visibleCatalogItems(page.items);
+                    items = visibleCatalogItems(page.items, { search: String(search || "").trim() });
                     hasMore = page.hasMore;
                     total = skip + items.length + (hasMore ? 1 : 0);
                     items = normalizeFeaturedImageLink(items);
@@ -659,7 +716,9 @@ module.exports = {
                         }
                     })
                 );
-                items = visibleCatalogItems(await resolveActiveCatalogItems(rawItems));
+                items = visibleCatalogItems(await resolveActiveCatalogItems(rawItems), {
+                    search: String(search || "").trim(),
+                });
                 total = esTotal;
             } catch (error) {
                 const mongoQuery = getMongoListQuery({ category, search });
@@ -667,7 +726,7 @@ module.exports = {
                     await Product.getSavingsSpotlight(mongoQuery, { ...req.paginationOptions, limit: limit + 1 }),
                     limit
                 );
-                items = visibleCatalogItems(page.items);
+                items = visibleCatalogItems(page.items, { search: String(search || "").trim() });
                 hasMore = page.hasMore;
                 total = skip + items.length + (hasMore ? 1 : 0);
                 items = normalizeFeaturedImageLink(items);
@@ -732,14 +791,22 @@ module.exports = {
             const productId = String(req.product?._id || req.params._id || "").trim();
             let query = { _id: productId, status: "active" };
 
-            if (shouldRefreshSupplierProduct(req.product)) {
-                syncSupplierProductInBackground(req.product);
-            }
-
             let item = await Product.view(query);
 
             if (!item) {
                 return res.error("INVALID_PRODUCT_ID");
+            }
+
+            if (needsSupplierVariationSync(req.product, item)) {
+                const synced = await syncSupplierProductNow(req.product || { _id: productId });
+                if (synced) {
+                    item = await Product.view(query);
+                    if (!item) {
+                        return res.error("INVALID_PRODUCT_ID");
+                    }
+                }
+            } else if (shouldRefreshSupplierProduct(req.product)) {
+                syncSupplierProductInBackground(req.product);
             }
 
             item = processVariations(item);
@@ -750,6 +817,13 @@ module.exports = {
             );
 
             await priceExchange(item, req.exchangeRate);
+
+            if (item?.description) {
+                item.description = rewriteDescriptionImageHtml(
+                    item.description,
+                    getApiPublicBase(req)
+                );
+            }
 
             if (req?.user?._id) {
                 void trackProductBehavior(req, {
@@ -778,6 +852,33 @@ module.exports = {
         } catch (error) {
             console.log(error)
             res.error(error)
+        }
+    },
+    proxyDescriptionImage: async (req, res) => {
+        try {
+            const imageUrl = resolveProxyImageSource(req);
+            const { stream, contentType } = await fetchExternalImageStream(imageUrl);
+            res.setHeader("Content-Type", contentType);
+            res.setHeader("Cache-Control", "public, max-age=604800, stale-while-revalidate=86400");
+            res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            stream.on("error", () => {
+                if (!res.headersSent) {
+                    res.status(502).end();
+                } else {
+                    res.end();
+                }
+            });
+            stream.pipe(res);
+        } catch (error) {
+            if (error?.code === "INVALID_IMAGE_URL") {
+                return res.status(400).json({ status: "failure", message: "Invalid image URL" });
+            }
+            if (error?.code === "UNSUPPORTED_IMAGE_TYPE") {
+                return res.status(415).json({ status: "failure", message: "Unsupported image type" });
+            }
+            console.warn("[products] description-image proxy failed:", error?.message || error);
+            return res.status(502).json({ status: "failure", message: "Image fetch failed" });
         }
     },
     adminSellerProducts: async (req, res) => {
@@ -947,8 +1048,8 @@ module.exports = {
                     endImageSearch();
                 }
 
-                const items = visibleCatalogItems(result.items || []);
-                const recommendations = visibleCatalogItems(result.recommendations || []);
+                const items = visibleCatalogItems(result.items || [], { search: String(search || "").trim() });
+                const recommendations = visibleCatalogItems(result.recommendations || [], { maxSensitive: 1 });
                 const categoryData = await safeCategoryById(category);
                 await safePriceExchange(items, req.exchangeRate);
                 if (recommendations.length) {
@@ -957,25 +1058,19 @@ module.exports = {
 
                 const vision = result.vision || {};
                 console.log(
-                    `[image-search] list done items=${items.length} provider=${result.provider || "none"}`
+                    `[image-search] list done items=${items.length} provider=${result.provider || "none"} mode=${result.searchMode || vision.searchMode || "unknown"}`
                 );
                 return res.success(req.nextPageOptions(
                     items,
                     result.total || items.length,
-                    {
+                    buildImageSearchListMeta(result, {
                         category: categoryData,
-                        imageSearch: true,
-                        imageSearchProvider: result.provider || "none",
-                        imageSearchKeyword: vision.primaryKeyword || vision.objectLabel || String(search || "").trim(),
-                        imageSearchObjectLabel: vision.objectLabel || vision.primaryKeyword || "",
-                        imageSearchKeywords: vision.keywords || [],
-                        imageSearchPhrase: vision.searchPhrase || "",
                         imageUrl,
                         smartListing: result.smartListing || null,
                         smartListingAttributes: vision.attributes || result.smartListing?.attributes || null,
                         recommendations,
                         smartRecommendations: recommendations.length > 0,
-                    }
+                    })
                 ));
             }
 
@@ -1010,9 +1105,9 @@ module.exports = {
                         searchEngine.includes("mongo") ||
                         searchEngine.includes("alibaba");
                     if (useDirectSearchItems) {
-                        items = visibleCatalogItems(normalizeFeaturedImageLink(rawEsItems));
+                        items = visibleCatalogItems(normalizeFeaturedImageLink(rawEsItems), { search });
                     } else {
-                        items = visibleCatalogItems(await resolveActiveCatalogItems(rawEsItems));
+                        items = visibleCatalogItems(await resolveActiveCatalogItems(rawEsItems), { search });
                     }
 
                 } else {
@@ -1050,7 +1145,7 @@ module.exports = {
 
             const categoryData = category ? await _model.Category.findById(category) : null;
 
-            items = visibleCatalogItems(items);
+            items = visibleCatalogItems(items, { search });
             await priceExchange(items, req.exchangeRate);
             const listExtras = { category: categoryData };
             if (imageUrl && String(search || "").trim()) {
@@ -1225,7 +1320,11 @@ module.exports = {
             }
 
             const vision = result.vision || {};
-            const searchTerm = vision.primaryKeyword || vision.searchPhrase || "";
+            const searchTerm = vision.topVisualMatchName
+                || vision.fallbackKeyword
+                || vision.primaryKeyword
+                || vision.searchPhrase
+                || "";
             if (searchTerm) {
                 trackProductBehavior(req, {
                     eventType: "search",
@@ -1233,6 +1332,7 @@ module.exports = {
                     score: 1,
                     metadata: {
                         imageSearch: true,
+                        imageSearchMode: result.searchMode || vision.searchMode || "keyword",
                         smartListing: Boolean(result.smartListing),
                         imageUrl,
                         provider: result.provider,
@@ -1243,17 +1343,13 @@ module.exports = {
             }
 
             return res.success(req.nextPageOptions(items, result.total || items.length, {
-                imageSearch: true,
-                imageSearchProvider: result.provider || "none",
-                imageSearchKeyword: vision.primaryKeyword || vision.objectLabel || "",
-                imageSearchObjectLabel: vision.objectLabel || vision.primaryKeyword || "",
-                imageSearchKeywords: vision.keywords || [],
-                imageSearchPhrase: vision.searchPhrase || "",
-                imageUrl,
-                smartListing: result.smartListing || null,
-                smartListingAttributes: vision.attributes || result.smartListing?.attributes || null,
-                recommendations,
-                smartRecommendations: recommendations.length > 0,
+                ...buildImageSearchListMeta(result, {
+                    imageUrl,
+                    smartListing: result.smartListing || null,
+                    smartListingAttributes: vision.attributes || result.smartListing?.attributes || null,
+                    recommendations,
+                    smartRecommendations: recommendations.length > 0,
+                }),
             }));
         } catch (error) {
             console.error("imageSearchUpload", error);

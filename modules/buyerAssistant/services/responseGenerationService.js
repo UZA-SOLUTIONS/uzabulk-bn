@@ -10,15 +10,28 @@ const ASSISTANT_MODEL = () =>
 const CONTEXT_CHAR_LIMIT = () =>
     Math.min(Math.max(Number(process.env.BUYER_ASSISTANT_CONTEXT_CHARS || 420), 200), 900);
 
-const buildSystemPrompt = (language, { hasProducts = false, isLoggedIn = false } = {}) => {
+const buildSystemPrompt = (language, { hasProducts = false, isLoggedIn = false, isProductFinding = false } = {}) => {
     const langName = languageLabel(language);
+    const sourcingRules = isProductFinding
+        ? `
+Sourcing / product search (this message):
+- The buyer wants to FIND or SOURCE a product from the wholesale catalog — treat "I need…", "I want…", "do you have…", or similar as a product search.
+- Lead with matching products from product_docs (name, price, MOQ). Product cards appear below your reply.
+- Do NOT say the item is missing from their cart, orders, or profile unless they explicitly asked about cart/orders.
+- Do NOT ask for fabric, style, size, or MOQ details before showing catalog matches — show matches first, then one short optional follow-up to narrow down.
+- If product_docs has matches, recommend the best 1–2 options confidently.
+- If no product_docs matches, say you searched the catalog and suggest they tap Search or try a simpler keyword — do not interrogate them with a long spec checklist.
+- NEVER invent product names, prices, MOQ, materials, sizes, or warehouse locations. Only state facts from product_docs or ALLOWED_CATALOG_PRODUCTS.`
+        : "";
+
     return `You are UZA Bulk AI Buyer Assistant — an agentic wholesale sourcing assistant for buyers.
 
 Personality & task style:
 - Act like a capable agent: understand the buyer's goal, answer with what you found, then suggest a clear next step they can take.
-- When logged in${isLoggedIn ? " (this buyer is signed in)" : ""}, proactively use their profile, orders, cart, and addresses from context when relevant.
+- When logged in${isLoggedIn ? " (this buyer is signed in)" : ""}, use profile, orders, cart, and addresses only when the buyer asks about account, cart, checkout, or order tracking — not when they are searching for new products to buy.
 - When products are in context${hasProducts ? " (product cards will show in chat)" : ""}, summarize the best match first, then mention alternatives if several appear.
 - Be concise (2–4 short paragraphs). Use bullet lines for order status or product specs when helpful.
+${sourcingRules}
 
 Formatting (critical):
 - Highlight prices, MOQ, order IDs, statuses, dates, and product names with HTML <strong> tags only.
@@ -30,7 +43,8 @@ Rules:
 - Answer ONLY using the provided context chunks. If context is insufficient, say what you need (order ID, product name, sign-in) and set status mentally as EXCEPTION.
 - Respond in ${langName} (${language}), matching the user's language even when context is in English.
 - For orders: cite order ID, status, carrier, waybill, last tracking event, and list ordered products with quantities and unit prices when order_products context is available.
-- For products: cite name, price, MOQ, tiers, and availability from product_docs or order_products chunks.
+- For products: cite name, price, MOQ, tiers, and availability from product_docs or order_products chunks only.
+- NEVER invent product names, prices, MOQ, fabrics, sizes, or shipping origins. Product cards below the reply are the only products you may describe.
 - Never invent tracking numbers, prices, or delivery dates not in context.
 - Do not use markdown horizontal rules or dash separators (---, --, ___).
 - Never use em-dash style separators like "text --- text"; use commas or short sentences instead.
@@ -84,12 +98,26 @@ const parseAssistantOutput = (content = "") => {
     return { answer, status, sources };
 };
 
+const formatAllowedProducts = (products = []) => {
+    if (!products.length) return "";
+    return products
+        .map((p, i) => {
+            const moq = p.moq ? `, MOQ ${p.moq}` : "";
+            return `${i + 1}. ${p.name || "Product"} — price ${p.price ?? "n/a"}${moq}`;
+        })
+        .join("\n");
+};
+
 const generateBuyerResponse = async ({
     userMessage,
     language = "en",
     chunks = [],
     conversationHistory = [],
     isLoggedIn = false,
+    toolContext = "",
+    answerHint = "",
+    isProductFinding = false,
+    catalogProducts = [],
 } = {}) => {
     const productChunks = chunks.filter((c) => c.source === "product_docs");
     const contextBlock = formatContextBlock(chunks);
@@ -104,14 +132,23 @@ const generateBuyerResponse = async ({
         {
             role: "system",
             content: buildSystemPrompt(language, {
-                hasProducts: productChunks.length > 0,
+                hasProducts: productChunks.length > 0 || catalogProducts.length > 0,
                 isLoggedIn,
+                isProductFinding,
             }),
         },
         ...historyMessages,
         {
             role: "user",
-            content: `Context:\n${contextBlock}\n\nBuyer question:\n${userMessage}`,
+            content: [
+                `Context:\n${contextBlock}`,
+                catalogProducts.length
+                    ? `\nALLOWED_CATALOG_PRODUCTS (only these may be mentioned):\n${formatAllowedProducts(catalogProducts)}`
+                    : "",
+                toolContext ? `\nAgent actions:\n${toolContext}` : "",
+                answerHint ? `\nGuidance: ${answerHint}` : "",
+                `\nBuyer question:\n${userMessage}`,
+            ].filter(Boolean).join("\n"),
         },
     ];
 

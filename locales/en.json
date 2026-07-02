@@ -119,5 +119,6 @@
 	"ASSISTANT_REPLY": "ASSISTANT_REPLY",
 	"Cannot access 'order' before initialization": "Cannot access 'order' before initialization",
 	"PRODUCT_NAMES_TRANSLATED": "PRODUCT_NAMES_TRANSLATED",
-	"PRODUCT_DETAIL_TRANSLATED": "PRODUCT_DETAIL_TRANSLATED"
+	"PRODUCT_DETAIL_TRANSLATED": "PRODUCT_DETAIL_TRANSLATED",
+	"Cannot read properties of null (reading 'categories')": "Cannot read properties of null (reading 'categories')"
 }

@@ -1,5 +1,6 @@
 const {
     handleBuyerChat,
+    handleConfirmAction,
     getWelcome,
     getSessionHistory,
     escalateToAgent,
@@ -11,6 +12,16 @@ module.exports = {
         return res.success("BUYER_ASSISTANT_STATUS", {
             enabled: isEnabled(),
             rag: true,
+            agentic: true,
+            confirmations: true,
+            capabilities: [
+                "product_search",
+                "cart_read",
+                "add_to_cart",
+                "checkout_guidance",
+                "order_tracking",
+                "navigation",
+            ],
             languages: ["en", "fr", "rw"],
         });
     },
@@ -32,6 +43,16 @@ module.exports = {
             return res.success("ASSISTANT_REPLY", result);
         } catch (error) {
             console.error("buyerAssistant.chat", error);
+            return res.error(error);
+        }
+    },
+
+    confirm: async (req, res) => {
+        try {
+            const result = await handleConfirmAction(req, req.body || {});
+            return res.success("ASSISTANT_CONFIRMED", result);
+        } catch (error) {
+            console.error("buyerAssistant.confirm", error);
             return res.error(error);
         }
     },

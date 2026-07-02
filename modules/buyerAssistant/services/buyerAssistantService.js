@@ -11,6 +11,26 @@ const {
     extractProductCards,
     buildAssistantActions,
 } = require("./assistantEnrichmentService");
+const { extractSearchQuery, isAccountIntentQuery, isCartIntentQuery } = require("./assistantIntentService");
+const {
+    buildGroundedProductAnswer,
+    filterAssistantProductCards,
+} = require("./assistantProductSearchHelper");
+const { buildGroundedCartAnswer } = require("./assistantCartService");
+const {
+    resolveAssistantMode,
+    buildGroundedOrderEmptyAnswer,
+    buildGroundedCheckoutEmptyAnswer,
+    buildCartEmptyWithSearchAnswer,
+    buildOrderEmptyWithSearchAnswer,
+    buildCheckoutEmptyWithSearchAnswer,
+} = require("./assistantContextResolver");
+const { runAssistantTools } = require("./assistantToolsService");
+const {
+    getPendingConfirmation,
+    clearPendingConfirmation,
+    executeConfirmedAction,
+} = require("./assistantConfirmationService");
 const {
     withTimeout,
     embeddingsEnabled,
@@ -21,21 +41,38 @@ const isEnabled = () =>
     String(process.env.BUYER_ASSISTANT_ENABLED ?? "true").toLowerCase() !== "false";
 
 const welcomeMessages = {
-    en: "I'm your UZA Bulk buyer assistant. Ask about any product by name (price, MOQ, details), delivery, or your orders. When you're signed in I can use your profile, cart, and order history.",
-    fr: "Je suis l'assistant acheteur UZA Bulk. Demandez des détails sur un produit (prix, MOQ), la livraison ou vos commandes. Une fois connecté, j'utilise votre profil, panier et historique.",
-    rw: "Ndi umufasha w'umuguzi wa UZA Bulk. Baza ku bicuruzwa (ibiciro, MOQ), itangwa ry'ibicuruzwa cyangwa amategeko yawe. Niba winjiye, nkoresha umwirondoro wawe, agakari n'amateka y'amategeko.",
+    en: "I'm your UZA Bulk buyer assistant. Ask about any product by name (price, MOQ, details), delivery, or your orders. When you're signed in I can use your profile, cart, and order history — and help you add items to cart or reach checkout.",
+    fr: "Je suis l'assistant acheteur UZA Bulk. Demandez des détails sur un produit (prix, MOQ), la livraison ou vos commandes. Une fois connecté, j'utilise votre profil, panier et historique — et je peux vous aider à ajouter au panier ou passer commande.",
+    rw: "Ndi umufasha w'umuguzi wa UZA Bulk. Baza ku bicuruzwa (ibiciro, MOQ), itangwa cyangwa amategeko yawe. Niba winjiye, nkoresha umwirondoro wawe, agakari n'amateka — kandi nshobora kugufasha kongeramo ibicuruzwa cyangwa kugera ku checkout.",
 };
 
 const guestWelcomeMessages = {
-    en: "Hi! I'm your UZA Bulk buyer assistant. Ask about products, pricing, delivery, or track an order — include your order ID (e.g. UZA…). Sign in to let me see your orders and cart.",
-    fr: "Bonjour ! Je suis l'assistant acheteur UZA Bulk. Posez vos questions sur les produits, les prix, la livraison ou suivez une commande. Connectez-vous pour accéder à vos commandes et votre panier.",
-    rw: "Muraho! Ndi umufasha w'umuguzi wa UZA Bulk. Baza ku bicuruzwa, ibiciro cyangwa itangwa. Injira kugira ngo mbone amategeko n'agakari kawe.",
+    en: "Hi! I'm your UZA Bulk buyer assistant. Ask about products, pricing, delivery, or track an order — include your order ID (e.g. UZA…). Sign in to let me see your orders, cart, and help you checkout.",
+    fr: "Bonjour ! Je suis l'assistant acheteur UZA Bulk. Posez vos questions sur les produits, les prix, la livraison ou suivez une commande. Connectez-vous pour accéder à vos commandes, panier et checkout.",
+    rw: "Muraho! Ndi umufasha w'umuguzi wa UZA Bulk. Baza ku bicuruzwa, ibiciro cyangwa itangwa. Injira kugira ngo mbone amategeko, agakari kawe, kandi ngufashe checkout.",
 };
 
 const escalationNote = {
     en: "I've flagged this for our support team. A human agent will review your case shortly. You can also reach us via Contact Us or WhatsApp.",
     fr: "J'ai signalé votre demande à notre équipe support. Un agent vous contactera sous peu. Vous pouvez aussi nous joindre via Contactez-nous ou WhatsApp.",
     rw: "Natumenyesheje ikipe yacu y'ubufasha. Umukozi azasubiza vuba. Urashobora kandi kutwandikira binyuze kuri Contact Us cyangwa WhatsApp.",
+};
+
+const cancelConfirmationNote = {
+    en: "Okay — I cancelled that. Let me know if you'd like something else.",
+    fr: "D'accord — j'ai annulé. Dites-moi si vous souhaitez autre chose.",
+    rw: "Sawa — byahagaritswe. Mbwire niba ukeneye ikindi.",
+};
+
+const notifyEscalation = (session, userId, deviceId, note = "") => {
+    const payload = {
+        sessionId: String(session._id),
+        userId: userId ? String(userId) : null,
+        deviceId,
+        note: String(note || "").slice(0, 500),
+        at: new Date().toISOString(),
+    };
+    console.warn("[buyer-assistant] ESCALATION", JSON.stringify(payload));
 };
 
 const resolveSession = async ({ sessionId, userId, deviceId }) => {
@@ -72,6 +109,68 @@ const resolveSession = async ({ sessionId, userId, deviceId }) => {
         context: {},
     });
 };
+
+const mergeProductCards = (primary = [], extra = []) => {
+    const seen = new Set();
+    const merged = [];
+    [...primary, ...extra].forEach((card) => {
+        if (!card?.id || seen.has(card.id)) return;
+        seen.add(card.id);
+        merged.push(card);
+    });
+    return merged.slice(0, 4);
+};
+
+const appendAssistantTurn = (session, {
+    userMessage,
+    answer,
+    language,
+    dispute_flag,
+    generation,
+    assistantMeta,
+    products,
+    actions,
+}) => {
+    session.messages.push(
+        { role: "user", content: userMessage, language, date_created_utc: new Date() },
+        {
+            role: "assistant",
+            content: answer,
+            language,
+            dispute_flag,
+            status: generation.status,
+            metadata: assistantMeta,
+            date_created_utc: new Date(),
+        }
+    );
+    session.language = language;
+    session.date_modified_utc = new Date();
+};
+
+const buildChatPayload = ({
+    session,
+    answer,
+    language,
+    generation,
+    dispute_flag,
+    escalated,
+    assistantMeta,
+    products,
+    actions,
+    workflow,
+}) => ({
+    sessionId: session._id,
+    answer,
+    language,
+    status: generation.status,
+    dispute_flag,
+    escalated,
+    sources: assistantMeta.chunks,
+    products,
+    actions,
+    workflow: workflow || session.context?.workflow || null,
+    welcome: welcomeMessages[language] || welcomeMessages.en,
+});
 
 const handleBuyerChat = async (req, body = {}) => {
     if (!isEnabled()) {
@@ -114,6 +213,60 @@ const handleBuyerChat = async (req, body = {}) => {
         orderRef: body.orderId || body.orderRef,
     });
 
+    const tools = await runAssistantTools({
+        message,
+        userId,
+        deviceId,
+        productId: body.productId,
+        retrieval,
+        session,
+        language,
+        isLoggedIn: Boolean(userId),
+    });
+
+    if (tools.workflowUpdate !== undefined) {
+        session.context = {
+            ...(session.context || {}),
+            workflow: tools.workflowUpdate,
+        };
+    }
+
+    const mode = tools.mode || resolveAssistantMode({
+        message,
+        intent: tools.intent || {},
+        cartSnapshot: tools.cartSnapshot,
+        retrieval,
+        userId,
+        isLoggedIn: Boolean(userId),
+    });
+
+    const productFinding = mode.mode === "product_search"
+        || (Boolean(
+            (retrieval.productFinding || tools.intent?.isProductFinding)
+            && !tools.intent?.isAccountIntent
+            && !isAccountIntentQuery(message)
+        ) && mode.mode === "general");
+
+    const searchQuery = mode.searchQuery || extractSearchQuery(message);
+    let products = mergeProductCards(
+        extractProductCards(retrieval.chunks),
+        tools.extraProducts
+    );
+
+    if (mode.allowProductCards && searchQuery) {
+        products = filterAssistantProductCards(products, searchQuery, { limit: 4 });
+    } else if (mode.mode === "cart" && Number(tools.cartSnapshot?.itemCount || 0) > 0) {
+        products = [];
+    } else if (["order", "cart"].includes(mode.mode) && !mode.allowProductCards) {
+        products = [];
+    } else if (isAccountIntentQuery(message) && !mode.allowProductCards) {
+        products = [];
+    } else if (productFinding && searchQuery) {
+        products = filterAssistantProductCards(products, searchQuery, { limit: 4 });
+    }
+
+    const guidanceHint = tools.confirmations?.length ? "" : tools.answerHint;
+
     let generation = {
         answer: "",
         status: "EXCEPTION",
@@ -122,15 +275,121 @@ const handleBuyerChat = async (req, body = {}) => {
         contextCount: retrieval.chunks.length,
     };
 
-    if (isDashscopeConfigured()) {
+    if (!tools.confirmations?.length) {
+        switch (mode.mode) {
+            case "cart":
+                generation = {
+                    answer: buildGroundedCartAnswer(tools.cartSnapshot, language, Boolean(userId)),
+                    status: "ok",
+                    sources: ["customer_cart"],
+                    model: "grounded-cart",
+                    contextCount: retrieval.chunks.length,
+                };
+                break;
+            case "cart_empty":
+                generation = {
+                    answer: buildGroundedCartAnswer(tools.cartSnapshot, language, Boolean(userId)),
+                    status: "ok",
+                    sources: ["customer_cart"],
+                    model: "grounded-cart-empty",
+                    contextCount: retrieval.chunks.length,
+                };
+                break;
+            case "cart_empty_search":
+                generation = {
+                    answer: buildCartEmptyWithSearchAnswer({
+                        cartSnapshot: tools.cartSnapshot,
+                        products,
+                        searchQuery: mode.searchQuery,
+                        language,
+                        isLoggedIn: Boolean(userId),
+                    }),
+                    status: products.length ? "ok" : "EXCEPTION",
+                    sources: products.map((p) => p.name),
+                    model: "grounded-empty-search",
+                    contextCount: retrieval.chunks.length,
+                };
+                break;
+            case "checkout_empty_search":
+                generation = {
+                    answer: buildCheckoutEmptyWithSearchAnswer({
+                        products,
+                        searchQuery: mode.searchQuery,
+                        language,
+                    }),
+                    status: products.length ? "ok" : "EXCEPTION",
+                    sources: products.map((p) => p.name),
+                    model: "grounded-checkout-empty-search",
+                    contextCount: retrieval.chunks.length,
+                };
+                break;
+            case "order_empty_search":
+                generation = {
+                    answer: buildOrderEmptyWithSearchAnswer({
+                        products,
+                        searchQuery: mode.searchQuery,
+                        language,
+                        isLoggedIn: Boolean(userId),
+                    }),
+                    status: products.length ? "ok" : "EXCEPTION",
+                    sources: products.map((p) => p.name),
+                    model: "grounded-order-empty-search",
+                    contextCount: retrieval.chunks.length,
+                };
+                break;
+            case "checkout_empty":
+                generation = {
+                    answer: buildGroundedCheckoutEmptyAnswer(language, { hasSearch: false }),
+                    status: "ok",
+                    sources: ["customer_cart"],
+                    model: "grounded-checkout-empty",
+                    contextCount: retrieval.chunks.length,
+                };
+                break;
+            case "order_empty":
+                generation = {
+                    answer: buildGroundedOrderEmptyAnswer(language, Boolean(userId)),
+                    status: "ok",
+                    sources: ["order_history"],
+                    model: "grounded-order-empty",
+                    contextCount: retrieval.chunks.length,
+                };
+                break;
+            case "product_search":
+                generation = {
+                    answer: buildGroundedProductAnswer(products, searchQuery, language),
+                    status: products.length ? "ok" : "EXCEPTION",
+                    sources: products.map((p) => p.name),
+                    model: "grounded-catalog",
+                    contextCount: retrieval.chunks.length,
+                };
+                break;
+            default:
+                break;
+        }
+    }
+
+    if (!generation.answer && productFinding && !tools.confirmations?.length) {
+        generation = {
+            answer: buildGroundedProductAnswer(products, searchQuery, language),
+            status: products.length ? "ok" : "EXCEPTION",
+            sources: products.map((p) => p.name),
+            model: "grounded-catalog",
+            contextCount: retrieval.chunks.length,
+        };
+    } else if (!generation.answer && isDashscopeConfigured()) {
         generation = await generateBuyerResponse({
             userMessage: message,
             language,
             chunks: retrieval.chunks,
             conversationHistory: history,
             isLoggedIn: Boolean(userId),
+            toolContext: tools.toolContext,
+            answerHint: guidanceHint,
+            isProductFinding: productFinding,
+            catalogProducts: products,
         });
-    } else {
+    } else if (!generation.answer) {
         generation.answer = retrieval.chunks.length
             ? `${retrieval.chunks[0].title}: ${retrieval.chunks[0].text}`.slice(0, 600)
             : "AI assistant is not configured. Please contact support.";
@@ -140,16 +399,21 @@ const handleBuyerChat = async (req, body = {}) => {
     const dispute_flag = risk.dispute_flag || risk.escalate;
     let answer = generation.answer;
 
+    if (tools.answerHint && tools.confirmations?.length) {
+        answer = `${answer}\n\n${tools.answerHint}`;
+    }
+
     if (dispute_flag && risk.escalate) {
         answer = `${answer}\n\n${escalationNote[language] || escalationNote.en}`;
     }
 
-    const products = extractProductCards(retrieval.chunks);
     const actions = buildAssistantActions({
         message,
         retrieval,
         products,
         isLoggedIn: Boolean(userId),
+        cartSnapshot: tools.cartSnapshot,
+        toolActions: [...(tools.confirmations || []), ...(tools.actions || [])],
     });
 
     const assistantMeta = {
@@ -163,23 +427,24 @@ const handleBuyerChat = async (req, body = {}) => {
         riskReasons: risk.reasons,
         products,
         actions,
+        toolResults: tools.toolResults,
+        intent: tools.intent?.primary || "general",
+        assistantMode: mode.mode,
+        productFinding,
+        workflow: session.context?.workflow || null,
     };
 
-    session.messages.push(
-        { role: "user", content: message, language, date_created_utc: new Date() },
-        {
-            role: "assistant",
-            content: answer,
-            language,
-            dispute_flag,
-            status: generation.status,
-            metadata: assistantMeta,
-            products,
-            actions,
-            date_created_utc: new Date(),
-        }
-    );
-    session.language = language;
+    appendAssistantTurn(session, {
+        userMessage: message,
+        answer,
+        language,
+        dispute_flag,
+        generation,
+        assistantMeta,
+        products,
+        actions,
+    });
+
     session.dispute_flag = session.dispute_flag || dispute_flag;
     session.escalated = session.escalated || risk.escalate;
     session.context = {
@@ -187,26 +452,99 @@ const handleBuyerChat = async (req, body = {}) => {
         lastOrderRef: retrieval.orderRef,
         lastProductId: body.productId || session.context?.lastProductId,
     };
-    session.date_modified_utc = new Date();
 
-    const payload = {
-        sessionId: session._id,
+    const payload = buildChatPayload({
+        session,
         answer,
         language,
-        status: generation.status,
+        generation,
         dispute_flag,
         escalated: risk.escalate,
-        sources: assistantMeta.chunks,
+        assistantMeta,
         products,
         actions,
-        welcome: welcomeMessages[language] || welcomeMessages.en,
-    };
+        workflow: session.context?.workflow,
+    });
 
     session.save().catch((err) => {
         console.warn("buyerAssistant session save:", err?.message || err);
     });
 
     return payload;
+};
+
+const handleConfirmAction = async (req, body = {}) => {
+    if (!isEnabled()) throw new Error("BUYER_ASSISTANT_DISABLED");
+
+    const confirmationId = String(body.confirmationId || "").trim();
+    if (!confirmationId) throw new Error("CONFIRMATION_ID_REQUIRED");
+
+    const userId = req.user?._id || null;
+    const deviceId = req.deviceId || "";
+    const confirmed = body.confirmed !== false;
+
+    const session = await resolveSession({
+        sessionId: body.sessionId,
+        userId,
+        deviceId,
+    });
+
+    const pending = getPendingConfirmation(session, confirmationId);
+    if (!pending) throw new Error("CONFIRMATION_NOT_FOUND");
+
+    clearPendingConfirmation(session, confirmationId);
+
+    const language = session.language || "en";
+    let result;
+
+    if (!confirmed) {
+        result = {
+            answer: cancelConfirmationNote[language] || cancelConfirmationNote.en,
+            status: "ok",
+            products: [],
+            actions: [],
+            toolResults: [{ tool: pending.type, status: "cancelled" }],
+        };
+    } else {
+        result = await executeConfirmedAction(req, pending);
+    }
+
+    const assistantMeta = {
+        confirmationId,
+        confirmed,
+        actionType: pending.type,
+        products: result.products || [],
+        actions: result.actions || [],
+        toolResults: result.toolResults || [],
+    };
+
+    appendAssistantTurn(session, {
+        userMessage: confirmed ? `[Confirmed: ${pending.type}]` : `[Cancelled: ${pending.type}]`,
+        answer: result.answer,
+        language,
+        dispute_flag: false,
+        generation: { status: result.status || "ok" },
+        assistantMeta,
+        products: result.products || [],
+        actions: result.actions || [],
+    });
+
+    session.save().catch((err) => {
+        console.warn("buyerAssistant confirm save:", err?.message || err);
+    });
+
+    return buildChatPayload({
+        session,
+        answer: result.answer,
+        language,
+        generation: { status: result.status || "ok" },
+        dispute_flag: session.dispute_flag,
+        escalated: session.escalated,
+        assistantMeta,
+        products: result.products || [],
+        actions: result.actions || [],
+        workflow: session.context?.workflow,
+    });
 };
 
 const getWelcome = (language = "en", user = null) => {
@@ -250,15 +588,22 @@ const getSessionHistory = async ({ sessionId, userId, deviceId }) => {
 
     return {
         sessionId: session._id,
-        messages: (session.messages || []).map((m) => ({
+        messages: (session.messages || []).map((m, index) => ({
+            id: `${m.role}-${index}`,
             role: m.role,
-            content: m.content,
+            content: String(m.content || "").startsWith("[Confirmed:")
+                || String(m.content || "").startsWith("[Cancelled:")
+                ? ""
+                : m.content,
             language: m.language,
             dispute_flag: m.dispute_flag,
             status: m.status,
-        })),
+            products: m.metadata?.products || [],
+            actions: m.metadata?.actions || [],
+        })).filter((m) => m.content || m.products?.length || m.actions?.length),
         dispute_flag: session.dispute_flag,
         escalated: session.escalated,
+        workflow: session.context?.workflow || null,
     };
 };
 
@@ -273,11 +618,12 @@ const escalateToAgent = async (req, body = {}) => {
 
     session.escalated = true;
     session.dispute_flag = true;
+    const note = String(body.note || body.message || "").slice(0, 2000);
     session.context = {
         ...session.context,
         escalation: {
             id: uuidv4(),
-            note: String(body.note || body.message || "").slice(0, 2000),
+            note,
             at: new Date(),
             userId: userId ? String(userId) : null,
             deviceId,
@@ -285,6 +631,8 @@ const escalateToAgent = async (req, body = {}) => {
     };
     session.date_modified_utc = new Date();
     await session.save();
+
+    notifyEscalation(session, userId, deviceId, note);
 
     return {
         sessionId: session._id,
@@ -295,6 +643,7 @@ const escalateToAgent = async (req, body = {}) => {
 
 module.exports = {
     handleBuyerChat,
+    handleConfirmAction,
     getWelcome,
     getSessionHistory,
     escalateToAgent,
