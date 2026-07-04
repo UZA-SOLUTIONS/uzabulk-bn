@@ -74,6 +74,7 @@
     "nodemailer": "^8.0.7",
     "objectid": "^2.3.0",
     "openai": "^4.104.0",
+    "redis": "^6.0.1",
     "transliterate": "^1.0.1",
     "transliteration": "^2.3.5",
     "uuid": "^11.0.5",

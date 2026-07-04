@@ -1,4 +1,5 @@
 const { chatCompletionWithFallback } = require("../ai/services/chatWithFallback");
+const { redisMGet, redisMSet } = require("./redisCache");
 const {
     applyGlossaryToFields,
     shouldTranslateFieldForLang,
@@ -185,6 +186,7 @@ const productNameCache = new Map();
 const PRODUCT_NAME_CACHE_MAX = 5000;
 
 const cacheProductNames = (translations = {}) => {
+    const pairs = [];
     Object.entries(translations).forEach(([id, value]) => {
         const translated = String(value || "").trim();
         if (!id || !translated) return;
@@ -193,7 +195,9 @@ const cacheProductNames = (translations = {}) => {
             productNameCache.delete(firstKey);
         }
         productNameCache.set(`fr:${id}`, translated);
+        pairs.push([`uzabulk:trans:fr:name:${id}`, translated]);
     });
+    if (pairs.length) redisMSet(pairs).catch(() => {});
 };
 
 /**
@@ -222,6 +226,26 @@ const translateProductNamesToFrench = async (items = []) => {
             toTranslate.push(item);
         }
     });
+
+    if (!toTranslate.length) return result;
+
+    // Check Redis for uncached items
+    const redisKeys = toTranslate.map((item) => `uzabulk:trans:fr:name:${item.id}`);
+    const redisValues = await redisMGet(redisKeys);
+    const stillToTranslate = [];
+    toTranslate.forEach((item, idx) => {
+        if (redisValues[idx]) {
+            result[item.id] = redisValues[idx];
+            productNameCache.set(`fr:${item.id}`, redisValues[idx]);
+        } else {
+            stillToTranslate.push(item);
+        }
+    });
+    if (!stillToTranslate.length) return result;
+    const toTranslateFiltered = stillToTranslate;
+    // reassign for rest of function
+    toTranslate.length = 0;
+    toTranslateFiltered.forEach(i => toTranslate.push(i));
 
     if (!toTranslate.length) return result;
 
