@@ -123,5 +123,10 @@
 	"Cannot read properties of null (reading 'categories')": "Cannot read properties of null (reading 'categories')",
 	"VARIATION_IS_REQUIRED": "VARIATION_IS_REQUIRED",
 	"cursor id 4650707270408100633 not found": "cursor id 4650707270408100633 not found",
-	"cursor id 1354286643581346201 not found": "cursor id 1354286643581346201 not found"
+	"cursor id 1354286643581346201 not found": "cursor id 1354286643581346201 not found",
+	"cursor id 8817369841576710048 not found": "cursor id 8817369841576710048 not found",
+	"cursor id 8498184800308336669 not found": "cursor id 8498184800308336669 not found",
+	"cursor id 7274098642914260515 not found": "cursor id 7274098642914260515 not found",
+	"cursor id 4776565595369926962 not found": "cursor id 4776565595369926962 not found",
+	"cursor id 2420158958381149279 not found": "cursor id 2420158958381149279 not found"
 }

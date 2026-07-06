@@ -16,6 +16,7 @@ const STORE_TYPE_ID = "660e3c271095513081ed2223";
 const updateProductDetails = async (product, productDetails) => {
     try {
         let productObject = {};
+        let supplierIds = {};
         console.log("Product Processing to fetch latest - ", product.offerId);
 
         if (productDetails && productDetails.status == "published") {
@@ -23,7 +24,7 @@ const updateProductDetails = async (product, productDetails) => {
             const { topCategoryId = "", secondCategoryId, thirdCategoryId, status, productSkuInfos, subject, subjectTrans, offerId, description, productSaleInfo, productImage, soldOut, productAttribute, mainVideo, detailVideo, productShippingInfo } = productDetails;
             const price_tiers = transformPriceRange(productSaleInfo?.priceRangeList || []);
             const min_order_qty = extractMinOrderQty(productDetails);
-            const supplierIds = extractSupplierIds(productDetails);
+            supplierIds = extractSupplierIds(productDetails);
 
             const [categories, variations, localRatingStats] = await Promise.all([
                 _model.Category.getExternalCategory([topCategoryId, secondCategoryId, thirdCategoryId]),
