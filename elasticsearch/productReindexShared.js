@@ -13,7 +13,7 @@ const MONGO_RETRY_DELAY_MS = 3000;
 const STATE_PATH = path.join(__dirname, "../scripts/.reindex-products-state.json");
 
 const PRODUCT_SELECT =
-    "name slug sku offerId short_description description status isFeatured bestSeller price average_rating sold_count date_created_utc date_modified_utc categories price_tiers featured_image";
+    "name slug sku offerId short_description description status isFeatured bestSeller price average_rating sold_count date_created_utc date_modified_utc categories topCategoryId price_tiers featured_image";
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 

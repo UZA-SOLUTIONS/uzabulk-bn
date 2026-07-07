@@ -128,5 +128,12 @@
 	"cursor id 8498184800308336669 not found": "cursor id 8498184800308336669 not found",
 	"cursor id 7274098642914260515 not found": "cursor id 7274098642914260515 not found",
 	"cursor id 4776565595369926962 not found": "cursor id 4776565595369926962 not found",
-	"cursor id 2420158958381149279 not found": "cursor id 2420158958381149279 not found"
+	"cursor id 2420158958381149279 not found": "cursor id 2420158958381149279 not found",
+	"connection <monitor> to 8": {
+		"211": {
+			"56": {
+				"133": "27017 timed out"
+			}
+		}
+	}
 }

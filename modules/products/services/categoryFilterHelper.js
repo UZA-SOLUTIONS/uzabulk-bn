@@ -32,7 +32,7 @@ const loadChildrenMap = async () => {
     }
 
     const rows = await _model.Category.find({ status: "active" })
-        .select("_id subcategories")
+        .select("_id subcategories parent")
         .lean();
 
     const map = new Map();
@@ -42,6 +42,16 @@ const loadChildrenMap = async () => {
             .map((sub) => String(sub))
             .filter(looksLikeObjectId);
         map.set(id, children);
+    });
+
+    rows.forEach((row) => {
+        const id = String(row._id);
+        const parent = String(row.parent || "").trim();
+        if (!parent || parent === "none" || !looksLikeObjectId(parent)) return;
+        const siblings = map.get(parent) || [];
+        if (!siblings.includes(id)) {
+            map.set(parent, [...siblings, id]);
+        }
     });
 
     childrenByParent = map;
@@ -112,8 +122,34 @@ const buildEsCategoryFilter = (categoryIds = []) => {
     };
 };
 
+/**
+ * Expand many root categories in one pass (reuses cached category tree).
+ */
+const expandCategoryFilterIdsBatch = async (rootIds = []) => {
+    const roots = [...new Set(rootIds.map(String).filter(looksLikeObjectId))];
+    if (!roots.length) {
+        return { expandedByRoot: new Map(), allIds: [] };
+    }
+
+    const childrenMap = await loadChildrenMap();
+    const expandedByRoot = new Map();
+    const allIds = new Set();
+
+    roots.forEach((rootId) => {
+        const cached = getCachedExpand(rootId);
+        const ids = cached || collectDescendantIds(rootId, childrenMap);
+        if (!cached) setCachedExpand(rootId, ids);
+        const idSet = new Set(ids.map(String));
+        expandedByRoot.set(rootId, idSet);
+        idSet.forEach((id) => allIds.add(id));
+    });
+
+    return { expandedByRoot, allIds: [...allIds] };
+};
+
 module.exports = {
     expandCategoryFilterIds,
+    expandCategoryFilterIdsBatch,
     buildMongoCategoryMatch,
     buildEsCategoryFilter,
 };

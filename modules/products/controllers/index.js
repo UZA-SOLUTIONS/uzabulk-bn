@@ -1,4 +1,5 @@
 const Product = require('../services');
+const mongoose = require('mongoose');
 const { processVariations } = require("../../../utils");
 const { enrichProductReviewsAndRatings } = require('../helper/ratings');
 const { isValidObjectId } = require('../../../validators/validator');
@@ -48,10 +49,14 @@ const { expandSearchQuery } = require('../../ai/services/aiTextSearchService');
 const { isElasticsearchReachable } = require('../../../elasticsearch/availability');
 const { balanceCatalogProducts, filterCatalogProducts } = require('../helpers/catalogVisibilityHelper');
 const { getSeedNumber } = require('../services/catalogRotationService');
+const {
+    resolveCategoryThumbnailsBulk,
+    fetchCategoryThumbListItems,
+} = require('../services/categoryThumbnailService');
 
 const visibleCatalogItems = (items = [], options = {}) => (
     balanceCatalogProducts(Array.isArray(items) ? items : [], {
-        maxSensitive: 2,
+        maxSensitive: 0,
         ...options,
     })
 );
@@ -412,9 +417,113 @@ const imageProjection = {
 };
 
 const CATEGORY_THUMBNAIL_CONCURRENCY = Math.min(
-    Math.max(Number(process.env.CATEGORY_THUMBNAIL_CONCURRENCY || 1), 1),
+    Math.max(Number(process.env.CATEGORY_THUMBNAIL_CONCURRENCY || 4), 1),
     4
 );
+
+const CATEGORY_THUMBNAIL_TIMEOUT_MS = Math.min(
+    Math.max(Number(process.env.CATEGORY_THUMBNAIL_TIMEOUT_MS || 4000), 1500),
+    8000
+);
+
+const CATEGORY_THUMBNAIL_PRODUCT_SCAN = 4;
+
+const CATEGORY_IMAGE_MATCH = {
+    $or: [
+        { featured_image: { $exists: true, $nin: [null, ""] } },
+        { images: { $exists: true, $not: { $size: 0 } } },
+    ],
+};
+
+const buildCategoryThumbMatch = async (categoryId) => {
+    let categoryIds = [categoryId];
+    try {
+        categoryIds = await expandCategoryFilterIds(categoryId);
+    } catch (err) {
+        console.warn(`[categoryThumbnails] expandCategoryFilterIds failed for ${categoryId}:`, err?.message || err);
+    }
+
+    const match = {
+        status: "active",
+        ...CATEGORY_IMAGE_MATCH,
+    };
+    const categoryMatch = buildMongoCategoryMatch(categoryIds);
+    if (categoryMatch) Object.assign(match, categoryMatch);
+    return match;
+};
+
+const queryCategoryThumbProducts = async (categoryId, { skip = 0, limit = CATEGORY_THUMBNAIL_PRODUCT_SCAN } = {}) => {
+    const match = await buildCategoryThumbMatch(categoryId);
+    return visibleCatalogItems(await _model.Product.find(match)
+        .sort({ sold_count: -1, average_rating: -1, _id: -1 })
+        .skip(skip)
+        .limit(limit)
+        .select(imageProjection)
+        .lean());
+};
+
+const pickCategoryIconFromDoc = (cat) => {
+    const img = cat?.catImage;
+    if (typeof img === "string" && img.trim()) return img.trim();
+    if (img?.link) return String(img.link).trim();
+    return "";
+};
+
+const loadCategoryIconMap = async (categoryIds = []) => {
+    const ids = [...new Set(categoryIds.map(String).filter(looksLikeObjectId))];
+    if (!ids.length) return new Map();
+
+    const rows = await _model.Category.find({ _id: { $in: ids } })
+        .select("_id catImage")
+        .populate({ path: "catImage", select: "link -_id" })
+        .lean();
+
+    const iconById = new Map();
+    rows.forEach((row) => {
+        const url = pickCategoryIconFromDoc(row);
+        if (url) iconById.set(String(row._id), url);
+    });
+    return iconById;
+};
+
+const CATEGORY_THUMB_SELECT = {
+    topCategoryId: 1,
+    secondCategoryId: 1,
+    thirdCategoryId: 1,
+    categories: 1,
+    featured_image: 1,
+    images: 1,
+    name: 1,
+    offerId: 1,
+};
+
+const CATEGORY_THUMB_CACHE_TTL_MS = Math.min(
+    Math.max(Number(process.env.CATEGORY_THUMBNAIL_CACHE_TTL_MS || 600000), 60000),
+    3600000
+);
+const categoryThumbResponseCache = new Map();
+
+const buildCategoryThumbCacheKey = (categoryIds = [], refresh = "") => {
+    const ids = [...new Set(categoryIds.map(String).filter(looksLikeObjectId))].sort().join(",");
+    return `pick:${refresh || "0"}:${ids}`;
+};
+
+const getCategoryThumbCache = (cacheKey) => {
+    const entry = categoryThumbResponseCache.get(cacheKey);
+    if (!entry) return null;
+    if (Date.now() > entry.expires) {
+        categoryThumbResponseCache.delete(cacheKey);
+        return null;
+    }
+    return entry.data;
+};
+
+const setCategoryThumbCache = (cacheKey, data) => {
+    categoryThumbResponseCache.set(cacheKey, {
+        data,
+        expires: Date.now() + CATEGORY_THUMB_CACHE_TTL_MS,
+    });
+};
 
 const safeCategoryById = async (categoryId) => {
     if (!categoryId || !isMongoConnected()) return null;
@@ -439,31 +548,12 @@ const safePriceExchange = async (items, exchangeRate) => {
     }
 };
 
-const fetchCategoryThumbnailUrl = async (categoryId, refresh = "") => {
-    if (!isMongoConnected()) return "";
-
-    let categoryIds = [categoryId];
-    try {
-        categoryIds = await expandCategoryFilterIds(categoryId);
-    } catch (err) {
-        console.warn(`[categoryThumbnails] expandCategoryFilterIds failed for ${categoryId}:`, err?.message || err);
-    }
-
-    const match = {
-        status: "active",
-        featured_image: { $exists: true, $nin: [null, ""] },
-    };
-    const categoryMatch = buildMongoCategoryMatch(categoryIds);
-    if (categoryMatch) Object.assign(match, categoryMatch);
+const fetchCategoryThumbnailUrl = async (categoryId, refresh = "", fallbackIcon = "") => {
+    if (!isMongoConnected()) return fallbackIcon || "";
 
     try {
         const skip = getSeedNumber(`${refresh}:${categoryId}`) % 32;
-        const products = visibleCatalogItems(await _model.Product.find(match)
-            .sort({ sold_count: -1, average_rating: -1, _id: -1 })
-            .skip(skip)
-            .limit(12)
-            .select(imageProjection)
-            .lean());
+        const products = await queryCategoryThumbProducts(categoryId, { skip });
 
         for (const product of products) {
             const url = pickProductImageUrl(product);
@@ -472,6 +562,8 @@ const fetchCategoryThumbnailUrl = async (categoryId, refresh = "") => {
     } catch (err) {
         console.warn(`[categoryThumbnails] product query failed for ${categoryId}:`, err?.message || err);
     }
+
+    if (fallbackIcon) return fallbackIcon;
 
     try {
         return await resolveCategoryIconUrl(categoryId);
@@ -950,6 +1042,19 @@ module.exports = {
                 return res.success(req.nextPageOptions([], 0, { deferred: true }));
             }
 
+            if (isCategoryThumbPoll) {
+                const pageOffset = req.paginationOptions.skip;
+                const items = normalizeFeaturedImageLink(
+                    await fetchCategoryThumbListItems(category, pageOffset, limit)
+                );
+                const categoryData = await safeCategoryById(category);
+                await safePriceExchange(items, req.exchangeRate);
+                return res.success(req.nextPageOptions(items, items.length, {
+                    category: categoryData,
+                    hasMore: false,
+                }));
+            }
+
             const useRotatedBrowse =
                 !imageUrl
                 && !search
@@ -1049,7 +1154,7 @@ module.exports = {
                 }
 
                 const items = visibleCatalogItems(result.items || [], { search: String(search || "").trim() });
-                const recommendations = visibleCatalogItems(result.recommendations || [], { maxSensitive: 1 });
+                const recommendations = visibleCatalogItems(result.recommendations || [], { maxSensitive: 0 });
                 const categoryData = await safeCategoryById(category);
                 await safePriceExchange(items, req.exchangeRate);
                 if (recommendations.length) {
@@ -1145,7 +1250,10 @@ module.exports = {
 
             const categoryData = category ? await _model.Category.findById(category) : null;
 
-            items = visibleCatalogItems(items, { search });
+            items = visibleCatalogItems(items, {
+                search,
+                categoryName: categoryData?.catName || categoryData?.name || "",
+            });
             await priceExchange(items, req.exchangeRate);
             const listExtras = { category: categoryData };
             if (imageUrl && String(search || "").trim()) {
@@ -1376,10 +1484,6 @@ module.exports = {
 
     categoryThumbnails: async (req, res) => {
         try {
-            if (!isMongoConnected() || isImageSearchBusy()) {
-                return res.success("RECORD_FOUND", {});
-            }
-
             const rawIds = String(req.query.ids || "")
                 .split(",")
                 .map((id) => id.trim())
@@ -1391,21 +1495,29 @@ module.exports = {
             }
 
             const uniqueIds = [...new Set(rawIds)].slice(0, 32);
-            const result = {};
+            const cacheKey = buildCategoryThumbCacheKey(uniqueIds, refresh);
+            const cached = getCategoryThumbCache(cacheKey);
+            if (cached) {
+                return res.success("RECORD_FOUND", cached);
+            }
 
-            const thumbConcurrency = CATEGORY_THUMBNAIL_CONCURRENCY;
-            await mapPool(uniqueIds, thumbConcurrency, async (categoryId) => {
-                try {
-                    const url = await withPromiseTimeout(
-                        fetchCategoryThumbnailUrl(categoryId, refresh),
-                        5000,
-                        ""
-                    );
-                    if (url) result[categoryId] = url;
-                } catch (err) {
-                    console.warn(`categoryThumbnails failed for ${categoryId}:`, err.message);
-                }
-            });
+            const iconById = await loadCategoryIconMap(uniqueIds);
+            const iconsOnly = Object.fromEntries(
+                uniqueIds
+                    .map((id) => [id, iconById.get(String(id)) || ""])
+                    .filter(([, url]) => url)
+            );
+
+            if (isImageSearchBusy()) {
+                if (Object.keys(iconsOnly).length) setCategoryThumbCache(cacheKey, iconsOnly);
+                return res.success("RECORD_FOUND", iconsOnly);
+            }
+
+            const result = await resolveCategoryThumbnailsBulk(uniqueIds, refresh, iconById);
+
+            if (Object.keys(result).length) {
+                setCategoryThumbCache(cacheKey, result);
+            }
 
             return res.success("RECORD_FOUND", result);
         } catch (error) {
