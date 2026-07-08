@@ -153,3 +153,50 @@ module.exports = {
     resolveProxyImageSource,
     fetchExternalImageStream,
 };
+
+const { createClient } = require("redis");
+let __redisClient = null;
+let __redisConnecting = null;
+const IMAGE_CACHE_TTL_SECONDS = 60 * 60 * 24; // 24h
+
+async function getImageCacheClient() {
+    if (__redisClient && __redisClient.isOpen) return __redisClient;
+    if (__redisConnecting) return __redisConnecting;
+    __redisConnecting = (async () => {
+        const c = createClient({ url: "redis://127.0.0.1:6379" });
+        c.on("error", () => {});
+        await c.connect();
+        __redisClient = c;
+        __redisConnecting = null;
+        return c;
+    })().catch(() => { __redisConnecting = null; return null; });
+    return __redisConnecting;
+}
+
+async function getCachedImageBuffer(imageUrl) {
+    try {
+        const c = await getImageCacheClient();
+        if (!c) return null;
+        const key = `img-proxy:${Buffer.from(imageUrl).toString("base64")}`;
+        const raw = await c.get(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return { contentType: parsed.contentType, buffer: Buffer.from(parsed.data, "base64") };
+    } catch {
+        return null;
+    }
+}
+
+async function setCachedImageBuffer(imageUrl, contentType, buffer) {
+    try {
+        const c = await getImageCacheClient();
+        if (!c) return;
+        const key = `img-proxy:${Buffer.from(imageUrl).toString("base64")}`;
+        await c.set(key, JSON.stringify({ contentType, data: buffer.toString("base64") }), { EX: IMAGE_CACHE_TTL_SECONDS });
+    } catch {
+        /* best effort */
+    }
+}
+
+module.exports.getCachedImageBuffer = getCachedImageBuffer;
+module.exports.setCachedImageBuffer = setCachedImageBuffer;

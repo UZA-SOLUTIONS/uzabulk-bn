@@ -16,6 +16,8 @@ const { updateProductDetails } = require('../helper/migration');
 const { syncVariationsFromFeatureAttribute } = require('../helper/featureAttributeVariations');
 const {
     fetchExternalImageStream,
+    getCachedImageBuffer,
+    setCachedImageBuffer,
     getApiPublicBase,
     resolveProxyImageSource,
     rewriteDescriptionImageHtml,
@@ -857,11 +859,26 @@ module.exports = {
     proxyDescriptionImage: async (req, res) => {
         try {
             const imageUrl = resolveProxyImageSource(req);
+
+            const cached = await getCachedImageBuffer(imageUrl);
+            if (cached && cached.buffer) {
+                res.setHeader("Content-Type", cached.contentType);
+                res.setHeader("Cache-Control", "public, max-age=604800, stale-while-revalidate=86400");
+                res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+                res.setHeader("Access-Control-Allow-Origin", "*");
+                res.setHeader("X-Image-Cache", "HIT");
+                return res.end(cached.buffer);
+            }
+
             const { stream, contentType } = await fetchExternalImageStream(imageUrl);
             res.setHeader("Content-Type", contentType);
             res.setHeader("Cache-Control", "public, max-age=604800, stale-while-revalidate=86400");
             res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
             res.setHeader("Access-Control-Allow-Origin", "*");
+            res.setHeader("X-Image-Cache", "MISS");
+
+            const chunks = [];
+            stream.on("data", (chunk) => chunks.push(chunk));
             stream.on("error", () => {
                 if (!res.headersSent) {
                     res.status(502).end();
@@ -869,7 +886,11 @@ module.exports = {
                     res.end();
                 }
             });
-            stream.pipe(res);
+            stream.on("end", () => {
+                const buffer = Buffer.concat(chunks);
+                res.end(buffer);
+                setCachedImageBuffer(imageUrl, contentType, buffer).catch(() => {});
+            });
         } catch (error) {
             if (error?.code === "INVALID_IMAGE_URL") {
                 return res.status(400).json({ status: "failure", message: "Invalid image URL" });
