@@ -15,6 +15,15 @@ const buildVersionedIndexName = () =>
 
 const isElasticSearchConfigured = () => Boolean(String(global.env?.ELASTIC_SEARCH?.BASE_URL || "").trim());
 
+const normalizeCategoryIdsForEs = (categories = []) => {
+    if (!Array.isArray(categories)) return [];
+    return [...new Set(
+        categories
+            .map((entry) => String(entry?._id || entry || "").trim())
+            .filter((id) => /^[a-fA-F0-9]{24}$/.test(id))
+    )];
+};
+
 const indexMapping = {
     settings: {
         analysis: {
@@ -74,6 +83,7 @@ const indexMapping = {
             sold_count: { type: "integer" },
             date_created_utc: { type: "date" },
             categories: { type: "keyword" },
+            topCategoryId: { type: "keyword" },
             price_tiers: {
                 type: "nested",
                 properties: {
@@ -144,7 +154,8 @@ module.exports = {
                 average_rating: document?.average_rating,
                 sold_count: document?.sold_count,
                 date_created_utc: document?.date_created_utc,
-                categories: document?.categories,
+                categories: normalizeCategoryIdsForEs(document?.categories),
+                topCategoryId: document?.topCategoryId ? String(document.topCategoryId) : undefined,
                 price_tiers: document?.price_tiers,
                 featured_image: document?.featured_image,
                 offerId: document?.offerId ? String(document.offerId) : undefined,
@@ -213,7 +224,8 @@ module.exports = {
                             average_rating: doc?.average_rating,
                             sold_count: doc?.sold_count,
                             date_created_utc: doc?.date_created_utc,
-                            categories: doc?.categories,
+                            categories: normalizeCategoryIdsForEs(doc?.categories),
+                            topCategoryId: doc?.topCategoryId ? String(doc.topCategoryId) : undefined,
                             price_tiers: doc?.price_tiers,
                             featured_image: doc?.featured_image,
                         },

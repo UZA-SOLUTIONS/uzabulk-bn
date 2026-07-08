@@ -96,7 +96,7 @@ const fetchUsableProducts = async ({
         if (batch.length < batchSize) break;
     }
 
-    return balanceCatalogProducts(dedupeProductList(products), { maxSensitive: 2 }).slice(0, safeLimit);
+    return balanceCatalogProducts(dedupeProductList(products), { maxSensitive: 0 }).slice(0, safeLimit);
 };
 
 const getRotatedProducts = async ({
