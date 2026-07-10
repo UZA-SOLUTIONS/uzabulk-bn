@@ -114,7 +114,8 @@ const env = {
         level: "store",
         percentage: 2
     },
-    storeId: "660e3c271095513081ed2211"
+    storeId: "660e3c271095513081ed2211",
+    storeTypeId: "660e3c271095513081ed2223",
 }
 
 module.exports = env;

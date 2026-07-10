@@ -5,6 +5,7 @@ let orderSchema = new mongoose.Schema({
     customOrderId: String,
     disputeId: { type: mongoose.Schema.Types.ObjectId, ref: 'dispute' },
     store: { type: mongoose.Schema.Types.ObjectId, ref: 'Store', default: env.storeId },
+    storeType: { type: mongoose.Schema.Types.ObjectId, ref: 'storeType', default: env.storeTypeId },
     vendor: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     driver: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -77,6 +78,18 @@ let orderSchema = new mongoose.Schema({
         raw_create_response: { type: Object, default: null },
         relay_error: { type: String, default: "" },
     },
+    warehouseLocation: {
+        location: String,
+        notes: String,
+        markedAt: Date,
+        markedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    },
+    trackingHistory: [
+        {
+            status: { type: String },
+            updatedAt: { type: Date },
+        },
+    ],
     meta_data: [
         {
             key: { type: String },

@@ -126,7 +126,7 @@ module.exports = {
         try {
             const user = req.user;
 
-            const query = { status: { $ne: 'archived' }, user: user._id };
+            const query = { orderStatus: { $ne: 'archived' }, user: user._id };
 
             const orders = await Order.list(query, req.paginationOptions);
             let total = await Order.countData(query);
@@ -212,6 +212,8 @@ module.exports = {
             for (const cartItem of checkout.line_items) {
                 orders.push({
                     user: user._id,
+                    store: env.storeId,
+                    storeType: env.storeTypeId,
                     vendor: cartItem.vendor?._id,
                     line_items: cartItem.items,
                     offerId: cartItem.offerId ? String(cartItem.offerId) : "",
@@ -224,7 +226,7 @@ module.exports = {
                     tax: cartItem.tax,
                     taxAmount: cartItem.taxAmount,
                     paymentMethod: paymentMethod,
-                    status: "pending",
+                    orderStatus: "pending",
                     customOrderId: helper.generateOrderID(),
                     coupon: checkout.coupon,
                     couponType: checkout.couponType,
