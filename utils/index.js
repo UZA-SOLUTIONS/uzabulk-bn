@@ -17,7 +17,8 @@ let sendSuccessResponse = (message, res, data, options = {}) => {
 let sendErrorResponse = function (err, res, data) {
     let code = 400;
     if (typeof err === 'object' && err !== null) {
-        const httpStatus = Number(err.statusCode || err.status);
+        // Auth middleware passes `code: 401`; also accept status / statusCode.
+        const httpStatus = Number(err.statusCode || err.status || err.code);
         if (httpStatus >= 100 && httpStatus < 600) {
             code = httpStatus;
         }
