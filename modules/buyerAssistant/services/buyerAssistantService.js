@@ -37,25 +37,31 @@ const {
     embedTimeoutMs,
 } = require("./buyerAssistantUtils");
 
+/** When true, cart/product/empty intents use HTML templates instead of RAG+LLM. Default: false. */
+const useGroundedTemplates = () =>
+    String(process.env.BUYER_ASSISTANT_USE_GROUNDED_TEMPLATES ?? "false").toLowerCase() === "true";
+
 const isEnabled = () =>
     String(process.env.BUYER_ASSISTANT_ENABLED ?? "true").toLowerCase() !== "false";
 
+const SUPPORT_WHATSAPP_DISPLAY = process.env.SUPPORT_WHATSAPP_DISPLAY || "0788 371 081";
+
 const welcomeMessages = {
-    en: "I'm your UZA Bulk buyer assistant. Ask about any product by name (price, MOQ, details), delivery, or your orders. When you're signed in I can use your profile, cart, and order history — and help you add items to cart or reach checkout.",
-    fr: "Je suis l'assistant acheteur UZA Bulk. Demandez des détails sur un produit (prix, MOQ), la livraison ou vos commandes. Une fois connecté, j'utilise votre profil, panier et historique — et je peux vous aider à ajouter au panier ou passer commande.",
-    rw: "Ndi umufasha w'umuguzi wa UZA Bulk. Baza ku bicuruzwa (ibiciro, MOQ), itangwa cyangwa amategeko yawe. Niba winjiye, nkoresha umwirondoro wawe, agakari n'amateka — kandi nshobora kugufasha kongeramo ibicuruzwa cyangwa kugera ku checkout.",
+    en: `I'm your UZA Bulk buyer assistant. Ask about any product by name (price, MOQ, details), delivery, or your orders. When you're signed in I can use your profile, cart, and order history — and help you add items to cart or reach checkout. Need a human? Chat with customer support on WhatsApp: ${SUPPORT_WHATSAPP_DISPLAY}.`,
+    fr: `Je suis l'assistant acheteur UZA Bulk. Demandez des détails sur un produit (prix, MOQ), la livraison ou vos commandes. Une fois connecté, j'utilise votre profil, panier et historique — et je peux vous aider à ajouter au panier ou passer commande. Besoin d'un humain ? WhatsApp : ${SUPPORT_WHATSAPP_DISPLAY}.`,
+    rw: `Ndi umufasha w'umuguzi wa UZA Bulk. Baza ku bicuruzwa (ibiciro, MOQ), itangwa cyangwa amategeko yawe. Niba winjiye, nkoresha umwirondoro wawe, agakari n'amateka — kandi nshobora kugufasha kongeramo ibicuruzwa cyangwa kugera ku checkout. Ukeneye umuntu? Vugana n'ubufasha kuri WhatsApp: ${SUPPORT_WHATSAPP_DISPLAY}.`,
 };
 
 const guestWelcomeMessages = {
-    en: "Hi! I'm your UZA Bulk buyer assistant. Ask about products, pricing, delivery, or track an order — include your order ID (e.g. UZA…). Sign in to let me see your orders, cart, and help you checkout.",
-    fr: "Bonjour ! Je suis l'assistant acheteur UZA Bulk. Posez vos questions sur les produits, les prix, la livraison ou suivez une commande. Connectez-vous pour accéder à vos commandes, panier et checkout.",
-    rw: "Muraho! Ndi umufasha w'umuguzi wa UZA Bulk. Baza ku bicuruzwa, ibiciro cyangwa itangwa. Injira kugira ngo mbone amategeko, agakari kawe, kandi ngufashe checkout.",
+    en: `Hi! I'm your UZA Bulk buyer assistant. Ask about products, pricing, delivery, or track an order — include your order ID (e.g. UZA…). Sign in to let me see your orders, cart, and help you checkout. For a human agent, WhatsApp us at ${SUPPORT_WHATSAPP_DISPLAY}.`,
+    fr: `Bonjour ! Je suis l'assistant acheteur UZA Bulk. Posez vos questions sur les produits, les prix, la livraison ou suivez une commande. Connectez-vous pour accéder à vos commandes, panier et checkout. Pour un agent humain, WhatsApp : ${SUPPORT_WHATSAPP_DISPLAY}.`,
+    rw: `Muraho! Ndi umufasha w'umuguzi wa UZA Bulk. Baza ku bicuruzwa, ibiciro cyangwa itangwa. Injira kugira ngo mbone amategeko, agakari kawe, kandi ngufashe checkout. Ukeneye umukozi? WhatsApp: ${SUPPORT_WHATSAPP_DISPLAY}.`,
 };
 
 const escalationNote = {
-    en: "I've flagged this for our support team. A human agent will review your case shortly. You can also reach us via Contact Us or WhatsApp.",
-    fr: "J'ai signalé votre demande à notre équipe support. Un agent vous contactera sous peu. Vous pouvez aussi nous joindre via Contactez-nous ou WhatsApp.",
-    rw: "Natumenyesheje ikipe yacu y'ubufasha. Umukozi azasubiza vuba. Urashobora kandi kutwandikira binyuze kuri Contact Us cyangwa WhatsApp.",
+    en: `I've flagged this for our support team. A human agent will review your case shortly. You can also chat with us directly on WhatsApp: ${SUPPORT_WHATSAPP_DISPLAY}.`,
+    fr: `J'ai signalé votre demande à notre équipe support. Un agent vous contactera sous peu. Vous pouvez aussi discuter directement sur WhatsApp : ${SUPPORT_WHATSAPP_DISPLAY}.`,
+    rw: `Natumenyesheje ikipe yacu y'ubufasha. Umukozi azasubiza vuba. Urashobora kandi kuvugana natwe kuri WhatsApp: ${SUPPORT_WHATSAPP_DISPLAY}.`,
 };
 
 const cancelConfirmationNote = {
@@ -182,7 +188,7 @@ const handleBuyerChat = async (req, body = {}) => {
 
     const userId = req.user?._id || null;
     const deviceId = req.deviceId || "";
-    const language = detectLanguage(message);
+    const language = detectLanguage(message, body.preferredLanguage || body.lang);
 
     const [session, queryVector] = await Promise.all([
         resolveSession({
@@ -275,28 +281,20 @@ const handleBuyerChat = async (req, body = {}) => {
         contextCount: retrieval.chunks.length,
     };
 
-    if (!tools.confirmations?.length) {
+    const buildTemplateFallback = () => {
+        if (tools.confirmations?.length) return null;
         switch (mode.mode) {
             case "cart":
-                generation = {
-                    answer: buildGroundedCartAnswer(tools.cartSnapshot, language, Boolean(userId)),
-                    status: "ok",
-                    sources: ["customer_cart"],
-                    model: "grounded-cart",
-                    contextCount: retrieval.chunks.length,
-                };
-                break;
             case "cart_empty":
-                generation = {
+                return {
                     answer: buildGroundedCartAnswer(tools.cartSnapshot, language, Boolean(userId)),
                     status: "ok",
                     sources: ["customer_cart"],
-                    model: "grounded-cart-empty",
+                    model: `grounded-${mode.mode}`,
                     contextCount: retrieval.chunks.length,
                 };
-                break;
             case "cart_empty_search":
-                generation = {
+                return {
                     answer: buildCartEmptyWithSearchAnswer({
                         cartSnapshot: tools.cartSnapshot,
                         products,
@@ -309,9 +307,8 @@ const handleBuyerChat = async (req, body = {}) => {
                     model: "grounded-empty-search",
                     contextCount: retrieval.chunks.length,
                 };
-                break;
             case "checkout_empty_search":
-                generation = {
+                return {
                     answer: buildCheckoutEmptyWithSearchAnswer({
                         products,
                         searchQuery: mode.searchQuery,
@@ -322,9 +319,8 @@ const handleBuyerChat = async (req, body = {}) => {
                     model: "grounded-checkout-empty-search",
                     contextCount: retrieval.chunks.length,
                 };
-                break;
             case "order_empty_search":
-                generation = {
+                return {
                     answer: buildOrderEmptyWithSearchAnswer({
                         products,
                         searchQuery: mode.searchQuery,
@@ -336,63 +332,82 @@ const handleBuyerChat = async (req, body = {}) => {
                     model: "grounded-order-empty-search",
                     contextCount: retrieval.chunks.length,
                 };
-                break;
             case "checkout_empty":
-                generation = {
+                return {
                     answer: buildGroundedCheckoutEmptyAnswer(language, { hasSearch: false }),
                     status: "ok",
                     sources: ["customer_cart"],
                     model: "grounded-checkout-empty",
                     contextCount: retrieval.chunks.length,
                 };
-                break;
             case "order_empty":
-                generation = {
+                return {
                     answer: buildGroundedOrderEmptyAnswer(language, Boolean(userId)),
                     status: "ok",
                     sources: ["order_history"],
                     model: "grounded-order-empty",
                     contextCount: retrieval.chunks.length,
                 };
-                break;
             case "product_search":
-                generation = {
+                return {
                     answer: buildGroundedProductAnswer(products, searchQuery, language),
                     status: products.length ? "ok" : "EXCEPTION",
                     sources: products.map((p) => p.name),
                     model: "grounded-catalog",
                     contextCount: retrieval.chunks.length,
                 };
-                break;
             default:
-                break;
+                if (productFinding) {
+                    return {
+                        answer: buildGroundedProductAnswer(products, searchQuery, language),
+                        status: products.length ? "ok" : "EXCEPTION",
+                        sources: products.map((p) => p.name),
+                        model: "grounded-catalog",
+                        contextCount: retrieval.chunks.length,
+                    };
+                }
+                return null;
+        }
+    };
+
+    // Prefer RAG + LLM for every intent (cart, find product, checkout, orders, etc.).
+    // Templates remain as optional opt-in or emergency fallback when the LLM is unavailable.
+    if (useGroundedTemplates() && !tools.confirmations?.length) {
+        const template = buildTemplateFallback();
+        if (template?.answer) generation = template;
+    }
+
+    if (!generation.answer && isDashscopeConfigured()) {
+        try {
+            generation = await generateBuyerResponse({
+                userMessage: message,
+                language,
+                chunks: retrieval.chunks,
+                conversationHistory: history,
+                isLoggedIn: Boolean(userId),
+                toolContext: tools.toolContext,
+                answerHint: guidanceHint,
+                isProductFinding: productFinding,
+                assistantMode: mode.mode,
+                catalogProducts: products,
+            });
+        } catch (genError) {
+            console.warn("buyerAssistant RAG generation:", genError?.message || genError);
+            generation = { answer: "", status: "EXCEPTION", sources: [], model: null, contextCount: retrieval.chunks.length };
         }
     }
 
-    if (!generation.answer && productFinding && !tools.confirmations?.length) {
-        generation = {
-            answer: buildGroundedProductAnswer(products, searchQuery, language),
-            status: products.length ? "ok" : "EXCEPTION",
-            sources: products.map((p) => p.name),
-            model: "grounded-catalog",
-            contextCount: retrieval.chunks.length,
-        };
-    } else if (!generation.answer && isDashscopeConfigured()) {
-        generation = await generateBuyerResponse({
-            userMessage: message,
-            language,
-            chunks: retrieval.chunks,
-            conversationHistory: history,
-            isLoggedIn: Boolean(userId),
-            toolContext: tools.toolContext,
-            answerHint: guidanceHint,
-            isProductFinding: productFinding,
-            catalogProducts: products,
-        });
-    } else if (!generation.answer) {
-        generation.answer = retrieval.chunks.length
-            ? `${retrieval.chunks[0].title}: ${retrieval.chunks[0].text}`.slice(0, 600)
-            : "AI assistant is not configured. Please contact support.";
+    if (!generation.answer) {
+        const template = buildTemplateFallback();
+        if (template?.answer) {
+            generation = template;
+        } else if (retrieval.chunks.length) {
+            generation.answer = `${retrieval.chunks[0].title}: ${retrieval.chunks[0].text}`.slice(0, 600);
+            generation.status = "ok";
+            generation.model = "chunk-fallback";
+        } else {
+            generation.answer = "AI assistant is not configured. Please contact support.";
+        }
     }
 
     const risk = assessDisputeRisk(message, generation.status);

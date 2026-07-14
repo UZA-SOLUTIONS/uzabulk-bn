@@ -33,8 +33,7 @@ const {
     trackProductBehavior,
 } = require('../services/recommendationService');
 const { runSmartListing, analyzeProductImage: analyzeImageAi } = require('../../ai/services/smartListingService');
-const { getSimilarProducts, ensureProductEmbedding } = require('../services/similarProductsService');
-const { ensureRelatedProducts } = require('../services/aiRecommendationService');
+const { getSimilarProducts } = require('../services/similarProductsService');
 const { searchCatalogByText } = require('../services/catalogSearchService');
 const {
     resolveImageSearchFromAi,
@@ -64,6 +63,124 @@ const visibleCatalogItems = (items = [], options = {}) => (
 );
 
 const looksLikeObjectId = (value) => /^[a-fA-F0-9]{24}$/.test(String(value || "").trim());
+
+/** Category id used for "You may also like" — same as home level-1 category filter. */
+const resolveSameCategoryFilterId = (product) => {
+    const asId = (value) => {
+        if (!value) return "";
+        if (typeof value === "string" && looksLikeObjectId(value)) return value;
+        if (value?._id && looksLikeObjectId(value._id)) return String(value._id);
+        return "";
+    };
+    return (
+        asId(product?.topCategoryId) ||
+        asId(product?.secondCategoryId) ||
+        asId(product?.thirdCategoryId) ||
+        asId(Array.isArray(product?.categories) ? product.categories[0] : "") ||
+        ""
+    );
+};
+
+/**
+ * Fast same-category catalog slice for PDP (no AI).
+ * Prefer ES (same as products/list?category=); Mongo is a short fallback only.
+ */
+const loadSameCategoryProducts = async (product, limit = 12) => {
+    const productId = String(product?._id || "").trim();
+    const categoryId = resolveSameCategoryFilterId(product);
+    const cap = Math.max(1, Math.min(Number(limit) || 12, 24));
+    if (!productId) return [];
+
+    const excludeId = looksLikeObjectId(productId)
+        ? new mongoose.Types.ObjectId(productId)
+        : null;
+
+    const listSelect = {
+        name: 1,
+        price: 1,
+        compare_price: 1,
+        images: 1,
+        featured_image: 1,
+        average_rating: 1,
+        rating_count: 1,
+        short_description: 1,
+        offerId: 1,
+        min_order_qty: 1,
+        stock_status: 1,
+        sold_count: 1,
+        categories: 1,
+        topCategoryId: 1,
+    };
+
+    if (categoryId) {
+        // ES first — matches home category filtering and avoids slow Mongo on remote DB.
+        try {
+            const esPayload = unwrapEsSearchResult(
+                await esProductService.list({
+                    category: categoryId,
+                    limit: cap + 4,
+                    skip: 0,
+                })
+            );
+            const fromEs = visibleCatalogItems(await resolveActiveCatalogItems(esPayload.items || []))
+                .filter((row) => String(row?._id || "") !== productId)
+                .slice(0, cap);
+            if (fromEs.length) return fromEs;
+        } catch (err) {
+            console.warn(`[products] same-category ES failed for ${categoryId}:`, err?.message || err);
+        }
+
+        try {
+            let categoryIds = [categoryId];
+            try {
+                categoryIds = await expandCategoryFilterIds(categoryId);
+            } catch (err) {
+                console.warn(`[products] expandCategoryFilterIds failed for ${categoryId}:`, err?.message || err);
+            }
+            const categoryMatch = buildMongoCategoryMatch(categoryIds.length ? categoryIds : [categoryId]);
+            if (categoryMatch && excludeId) {
+                const rows = await withPromiseTimeout(
+                    _model.Product.find({
+                        status: "active",
+                        _id: { $ne: excludeId },
+                        ...categoryMatch,
+                    })
+                        .sort({ sold_count: -1, date_created_utc: -1, _id: -1 })
+                        .limit(cap)
+                        .select(listSelect)
+                        .populate({ path: "featured_image", select: "link -_id" })
+                        .lean(),
+                    2500,
+                    []
+                );
+                const byCategory = visibleCatalogItems(normalizeFeaturedImageLink(rows || []));
+                if (byCategory.length) return byCategory;
+            }
+        } catch (err) {
+            console.warn(`[products] same-category mongo failed for ${categoryId}:`, err?.message || err);
+        }
+    }
+
+    // Last resort: recent active products so the section still renders.
+    if (!excludeId) return [];
+    try {
+        const rows = await withPromiseTimeout(
+            _model.Product.find({ status: "active", _id: { $ne: excludeId } })
+                .sort({ sold_count: -1, date_created_utc: -1, _id: -1 })
+                .limit(cap)
+                .select(listSelect)
+                .populate({ path: "featured_image", select: "link -_id" })
+                .lean(),
+            2500,
+            []
+        );
+        return visibleCatalogItems(normalizeFeaturedImageLink(rows || []));
+    } catch (err) {
+        console.warn(`[products] same-category fallback failed:`, err?.message || err);
+        return [];
+    }
+};
+
 const escapeRegex = (value = "") => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const normalizeSearchText = (value = "") => String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
 
@@ -662,6 +779,7 @@ module.exports = {
                 category,
                 fast: true,
                 skipExternal: true,
+                req,
             });
             const items = visibleCatalogItems(
                 await hydrateAutocompleteImages(aiSearch.items || []),
@@ -904,13 +1022,27 @@ module.exports = {
             }
 
             item = processVariations(item);
-            item = await withPromiseTimeout(
-                enrichProductReviewsAndRatings(item),
-                5000,
-                item
-            );
+            const [enrichedItem, sameCategoryProducts] = await Promise.all([
+                withPromiseTimeout(
+                    enrichProductReviewsAndRatings(item),
+                    5000,
+                    item
+                ),
+                withPromiseTimeout(
+                    loadSameCategoryProducts(item, 12),
+                    6000,
+                    []
+                ),
+            ]);
+            item = enrichedItem;
+            item.sameCategoryProducts = Array.isArray(sameCategoryProducts)
+                ? sameCategoryProducts
+                : [];
 
             await priceExchange(item, req.exchangeRate);
+            if (item.sameCategoryProducts.length) {
+                await priceExchange(item.sameCategoryProducts, req.exchangeRate);
+            }
 
             if (item?.description) {
                 item.description = rewriteDescriptionImageHtml(
@@ -926,20 +1058,6 @@ module.exports = {
                     score: 1,
                 });
             }
-
-            void getSimilarProducts(productId, { limit: 8 })
-                .then((similarProducts) => {
-                    if (!similarProducts?.length) return;
-                    ensureRelatedProducts(productId, { limit: 8 }).catch((err) => {
-                        console.warn(`Related products persist failed for ${productId}:`, err?.message);
-                    });
-                })
-                .catch((err) => {
-                    console.warn(`[products] similar products skipped for ${productId}:`, err?.message);
-                });
-            void ensureProductEmbedding(productId).catch((err) => {
-                console.warn(`Embedding warmup failed for ${productId}:`, err?.message);
-            });
 
             return res.success(item);
 
@@ -1221,6 +1339,7 @@ module.exports = {
                         fieldValue,
                         singleCategoryOnly: onlySingleCategory,
                         skipExternal: true,
+                        req,
                     });
                     rawEsItems = aiTextSearch.items || [];
                     esTotalHits = aiTextSearch.total || 0;

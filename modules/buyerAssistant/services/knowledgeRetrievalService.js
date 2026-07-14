@@ -177,9 +177,7 @@ const retrieveKnowledge = async ({
 
         const [order, buyerChunks, productChunks, faqs] = await Promise.all([
             fetchOrderForUser({ orderRef, userId, deviceId }),
-            productFinding && !orderRef
-                ? Promise.resolve([])
-                : fetchBuyerChunks({ userId, deviceId }),
+            fetchBuyerChunks({ userId, deviceId }),
             resolveProductChunksForQuery({
                 query,
                 queryVector,

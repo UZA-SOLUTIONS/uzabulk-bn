@@ -29,6 +29,10 @@ const projection = {
     ...listProjection,
     description: 1,
     price_tiers: 1,
+    categories: 1,
+    topCategoryId: 1,
+    secondCategoryId: 1,
+    thirdCategoryId: 1,
 };
 
 let list = (query, { limit, skip, order, orderBy, search }) => {

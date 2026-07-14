@@ -111,14 +111,21 @@ const buildMongoCategoryMatch = (categoryIds = []) => {
 };
 
 /**
- * Elasticsearch filter clause for category ids (keyword `categories` array).
+ * Elasticsearch filter clause for category ids.
+ * Match `categories` array OR `topCategoryId` (many catalog rows only set the tier field).
  */
 const buildEsCategoryFilter = (categoryIds = []) => {
     const strIds = [...new Set(categoryIds.map(String).filter(looksLikeObjectId))];
     if (!strIds.length) return null;
 
     return {
-        terms: { categories: strIds },
+        bool: {
+            should: [
+                { terms: { categories: strIds } },
+                { terms: { topCategoryId: strIds } },
+            ],
+            minimum_should_match: 1,
+        },
     };
 };
 

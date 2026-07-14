@@ -3,6 +3,7 @@ const esProductService = require("./esProductService");
 const { expandSearchQuery, basicQueryCleanup, normalizeTerm } = require("../../ai/services/aiTextSearchService");
 const { getElasticsearchAvailability } = require("../../../elasticsearch/availability");
 const { withMongoMaxTime } = require("../../../utils/mongoQueryOptions");
+const { applyIntelligentSearchLayer } = require("./intelligentTextSearchService");
 
 const SEARCH_TIMEOUT_MS = Math.min(
     Math.max(Number(process.env.SEARCH_SOURCE_TIMEOUT_MS || 8000), 3000),
@@ -226,13 +227,14 @@ const distillCatalogTerm = (value = "") => {
     return words.join(" ").trim();
 };
 
-/** Short product-name needles for image search (avoids long B2B vision phrases). */
+/** Short product-name needles for image search (built from scanned visual features). */
 const buildImageSearchCatalogNeedles = ({
     primaryKeyword = "",
     searchPhrase = "",
     objectLabel = "",
     keywords = [],
     categoryHint = "",
+    attributes = {},
 } = {}) => {
     const needles = [];
     const seen = new Set();
@@ -243,9 +245,40 @@ const buildImageSearchCatalogNeedles = ({
         needles.push(distilled);
     };
 
+    const attrs = attributes && typeof attributes === "object" ? attributes : {};
+    const colors = Array.isArray(attrs.colors) ? attrs.colors : (attrs.color ? [attrs.color] : []);
+    const materials = Array.isArray(attrs.materials) ? attrs.materials : (attrs.material ? [attrs.material] : []);
+    const distinctive = Array.isArray(attrs.distinctive_features) ? attrs.distinctive_features : [];
+    const parts = Array.isArray(attrs.parts_and_components) ? attrs.parts_and_components : [];
+
     add(primaryKeyword);
     add(objectLabel);
-    (Array.isArray(keywords) ? keywords : []).slice(0, 8).forEach(add);
+    add(attrs.product_type);
+    add(attrs.brand_or_logo);
+    add(categoryHint || attrs.category);
+    (Array.isArray(keywords) ? keywords : []).slice(0, 12).forEach(add);
+    distinctive.slice(0, 6).forEach(add);
+    parts.slice(0, 4).forEach(add);
+    add(attrs.style);
+    add(attrs.pattern);
+    add(attrs.shape);
+    add(attrs.finish);
+    add(attrs.visible_text);
+    add(attrs.use_case);
+
+    const productType = distillCatalogTerm(attrs.product_type || primaryKeyword || objectLabel);
+    colors.slice(0, 3).forEach((color) => {
+        add(color);
+        if (productType) add(`${color} ${productType}`);
+    });
+    materials.slice(0, 3).forEach((material) => {
+        add(material);
+        if (productType) add(`${material} ${productType}`);
+    });
+    if (attrs.style && productType) add(`${attrs.style} ${productType}`);
+    if (attrs.pattern && productType) add(`${attrs.pattern} ${productType}`);
+    if (attrs.brand_or_logo && productType) add(`${attrs.brand_or_logo} ${productType}`);
+
     add(searchPhrase);
 
     const baseWords = normalizeTerm(primaryKeyword || objectLabel || searchPhrase)
@@ -259,7 +292,7 @@ const buildImageSearchCatalogNeedles = ({
         add(baseWords[0]);
     }
 
-    return needles.sort((a, b) => a.length - b.length).slice(0, 8);
+    return needles.sort((a, b) => a.length - b.length).slice(0, 12);
 };
 
 const rankImageSearchNeedles = (needles = []) => {
@@ -591,15 +624,19 @@ const buildSearchMeta = (raw, terms, needle, engine, extra = {}) => ({
     engine,
     aiExpanded: Boolean(terms.aiExpanded),
     originalQuery: raw,
-    correctedQuery: raw,
+    correctedQuery: terms.correctedQuery || raw,
     searchQuery: needle,
     primary: terms.primary,
     keywords: terms.keywords,
     productType: terms.productType || "",
     categoryHint: terms.categoryHint || "",
-    userIntent: "",
+    userIntent: terms.userIntent || "",
     exactPhrase: terms.exactPhrase || terms.primary || "",
-    didCorrect: false,
+    didCorrect: Boolean(
+        terms.correctedQuery
+        && normalizeTerm(terms.correctedQuery) !== normalizeTerm(raw)
+    ),
+    visualIntent: Boolean(terms.visualIntent),
     ...extra,
 });
 
@@ -661,13 +698,25 @@ const searchCatalogByText = async ({
     singleCategoryOnly = false,
     fast = false,
     skipExternal = false,
+    intentContext = null,
+    req = null,
 } = {}) => {
     const raw = String(search || "").trim();
     if (!raw) {
         return { items: [], total: 0, searchMeta: { engine: "none" } };
     }
 
-    const terms = await expandSearchQuery(raw, {}, { fast });
+    let context = intentContext;
+    if (!context && !fast) {
+        try {
+            const { getSearchIntentContext } = require("../../ai/services/searchIntentService");
+            context = await getSearchIntentContext(raw, req);
+        } catch (_) {
+            context = {};
+        }
+    }
+
+    const terms = await expandSearchQuery(raw, context || {}, { fast });
     const variants = buildSearchVariants(raw, terms);
     const needle = terms.primary || terms.correctedQuery || raw;
     const esSkip = normalizeSearchSkip(skip);
@@ -676,8 +725,8 @@ const searchCatalogByText = async ({
         try {
             const payload = unwrapEsSearchResult(
                 await esProductService.list({
-                    search: raw,
-                    limit,
+                    search: terms.primary || raw,
+                    limit: Math.max(limit, 24),
                     skip: esSkip,
                     category,
                     fieldName,
@@ -687,13 +736,22 @@ const searchCatalogByText = async ({
                     order: -1,
                 })
             );
-            const items = rankSearchResults(payload.items, terms, variants)
-                .slice(0, limit)
-                .map(sanitizeSearchItem);
+            // Fast path: family filter only (no embedding round-trip) for autocomplete speed.
+            const intelligent = await applyIntelligentSearchLayer({
+                items: rankSearchResults(payload.items, terms, variants),
+                terms,
+                raw,
+                limit,
+                category,
+                fast: true,
+            });
+            const items = intelligent.items.map(sanitizeSearchItem);
             return {
                 items,
                 total: Math.max(payload.total, items.length),
-                searchMeta: buildSearchMeta(raw, terms, needle, "elasticsearch"),
+                searchMeta: buildSearchMeta(raw, terms, needle, "elasticsearch", {
+                    intelligent: intelligent.meta,
+                }),
             };
         } catch (error) {
             console.warn("Fast Elasticsearch search failed:", error?.message || error);
@@ -715,7 +773,7 @@ const searchCatalogByText = async ({
                 raw,
                 terms,
                 variants,
-                limit,
+                limit: Math.max(limit, 40),
                 skip: esSkip,
                 category,
                 fieldName,
@@ -763,14 +821,34 @@ const searchCatalogByText = async ({
         }
     }
 
-    const items = rankSearchResults(merged, terms, variants)
-        .slice(0, limit)
-        .map(sanitizeSearchItem);
+    const ranked = rankSearchResults(merged, terms, variants);
+    const intelligent = await applyIntelligentSearchLayer({
+        items: ranked,
+        terms,
+        raw,
+        limit,
+        category,
+        fast: false,
+    });
+
+    const items = intelligent.items.map(sanitizeSearchItem);
+    if (intelligent.meta?.semanticFilled) {
+        engine = `${engine}+semantic`;
+    }
+
+    try {
+        const { recordSearchIntent } = require("../../ai/services/searchIntentService");
+        void recordSearchIntent(raw, terms, req);
+    } catch (_) {
+        /* ignore tracking errors */
+    }
 
     return {
         items,
         total: Math.max(total, items.length),
-        searchMeta: buildSearchMeta(raw, terms, needle, engine),
+        searchMeta: buildSearchMeta(raw, terms, needle, engine, {
+            intelligent: intelligent.meta,
+        }),
     };
 };
 
@@ -794,6 +872,7 @@ const searchCatalogForImage = async ({
         objectLabel: vision?.objectLabel || "",
         keywords: vision?.keywords || [],
         categoryHint: vision?.attributes?.category || "",
+        attributes: vision?.attributes || {},
     });
 
     needles = await expandNeedlesForImageSearch({

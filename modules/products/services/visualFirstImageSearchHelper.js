@@ -57,10 +57,24 @@ const buildRelevanceContext = (vision = null, visualSeeds = []) => {
     });
 
     if (vision) {
+        const attrs = vision.attributes || {};
         addTokens(vision.searchPhrase, 3);
         addTokens(vision.objectLabel, 3);
         addTokens(vision.topVisualMatchName, 3);
+        addTokens(vision.featureSummary, 3);
         (vision.keywords || []).forEach((kw) => addTokens(kw, 3));
+        addTokens(attrs.product_type, 3);
+        addTokens(attrs.category, 3);
+        addTokens(attrs.brand_or_logo, 3);
+        addTokens(attrs.style, 3);
+        addTokens(attrs.pattern, 3);
+        addTokens(attrs.shape, 3);
+        addTokens(attrs.visible_text, 3);
+        addTokens(attrs.use_case, 3);
+        (attrs.colors || []).forEach((kw) => addTokens(kw, 3));
+        (attrs.materials || []).forEach((kw) => addTokens(kw, 3));
+        (attrs.distinctive_features || []).forEach((kw) => addTokens(kw, 3));
+        (attrs.parts_and_components || []).forEach((kw) => addTokens(kw, 3));
     }
 
     const topSeedCategoryIds = new Set(collectCategoryIds(topSeed));

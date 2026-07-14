@@ -267,6 +267,12 @@ const runAssistantTools = async ({
 
     if (intent.all.includes("escalate")) {
         toolResults.push({ tool: "escalate", status: "suggested" });
+        actions.push({
+            type: "whatsapp",
+            label: "Chat on WhatsApp",
+            url: process.env.SUPPORT_WHATSAPP_URL || "https://wa.me/250788371081",
+            message: "Hi UZA Bulk support, I need help from the buyer assistant.",
+        });
         actions.push({ type: "navigate", route: "CONTACT_US", label: "Contact support" });
     }
 

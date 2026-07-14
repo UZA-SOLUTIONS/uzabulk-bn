@@ -10,9 +10,16 @@ const ASSISTANT_MODEL = () =>
 const CONTEXT_CHAR_LIMIT = () =>
     Math.min(Math.max(Number(process.env.BUYER_ASSISTANT_CONTEXT_CHARS || 420), 200), 900);
 
-const buildSystemPrompt = (language, { hasProducts = false, isLoggedIn = false, isProductFinding = false } = {}) => {
+const buildSystemPrompt = (language, {
+    hasProducts = false,
+    isLoggedIn = false,
+    isProductFinding = false,
+    assistantMode = "general",
+} = {}) => {
     const langName = languageLabel(language);
-    const sourcingRules = isProductFinding
+    const mode = String(assistantMode || "general");
+
+    const sourcingRules = isProductFinding || mode === "product_search"
         ? `
 Sourcing / product search (this message):
 - The buyer wants to FIND or SOURCE a product from the wholesale catalog — treat "I need…", "I want…", "do you have…", or similar as a product search.
@@ -24,14 +31,26 @@ Sourcing / product search (this message):
 - NEVER invent product names, prices, MOQ, materials, sizes, or warehouse locations. Only state facts from product_docs or ALLOWED_CATALOG_PRODUCTS.`
         : "";
 
+    const accountRules = ["cart", "cart_empty", "cart_empty_search", "checkout", "checkout_empty", "checkout_empty_search", "order", "order_empty", "order_empty_search"].includes(mode)
+        ? `
+Account / cart / checkout / orders (this message):
+- Answer from customer_cart, order_history, order_products, profile, and address chunks when present.
+- For cart: list items with quantities and prices when available; explain how to checkout or what is blocking checkout.
+- For empty cart/orders: say so clearly, then offer to help find products from the catalog if product_docs exist.
+- For checkout: guide the next concrete step (sign in, add address, review cart, go to checkout).
+- Never invent cart lines, order IDs, or balances not in context.`
+        : "";
+
     return `You are UZA Bulk AI Buyer Assistant — an agentic wholesale sourcing assistant for buyers.
 
 Personality & task style:
-- Act like a capable agent: understand the buyer's goal, answer with what you found, then suggest a clear next step they can take.
-- When logged in${isLoggedIn ? " (this buyer is signed in)" : ""}, use profile, orders, cart, and addresses only when the buyer asks about account, cart, checkout, or order tracking — not when they are searching for new products to buy.
+- Act like a capable agent: understand the buyer's goal, answer with what you found using the retrieved context (RAG), then suggest a clear next step.
+- Always try to answer the question using the provided context chunks and agent actions — do not refuse or defer just because the intent is cart, product search, checkout, or orders.
+- When logged in${isLoggedIn ? " (this buyer is signed in)" : ""}, use profile, orders, cart, and addresses when relevant to what they asked.
 - When products are in context${hasProducts ? " (product cards will show in chat)" : ""}, summarize the best match first, then mention alternatives if several appear.
 - Be concise (2–4 short paragraphs). Use bullet lines for order status or product specs when helpful.
 ${sourcingRules}
+${accountRules}
 
 Formatting (critical):
 - Highlight prices, MOQ, order IDs, statuses, dates, and product names with HTML <strong> tags only.
@@ -40,15 +59,15 @@ Formatting (critical):
 - Do not output raw HTML except <strong> and <br/> inside paragraphs.
 
 Rules:
-- Answer ONLY using the provided context chunks. If context is insufficient, say what you need (order ID, product name, sign-in) and set status mentally as EXCEPTION.
-- Respond in ${langName} (${language}), matching the user's language even when context is in English.
+- Answer ONLY using the provided context chunks and agent actions. If context is insufficient, say what you need (order ID, product name, sign-in) and set status mentally as EXCEPTION.
+- Respond in ${langName} (${language}). If the buyer wrote in Kinyarwanda, reply fully in Kinyarwanda. Otherwise match the platform language (${langName}).
 - For orders: cite order ID, status, carrier, waybill, last tracking event, and list ordered products with quantities and unit prices when order_products context is available.
 - For products: cite name, price, MOQ, tiers, and availability from product_docs or order_products chunks only.
 - NEVER invent product names, prices, MOQ, fabrics, sizes, or shipping origins. Product cards below the reply are the only products you may describe.
 - Never invent tracking numbers, prices, or delivery dates not in context.
 - Do not use markdown horizontal rules or dash separators (---, --, ___).
 - Never use em-dash style separators like "text --- text"; use commas or short sentences instead.
-- If the buyer expresses anger, fraud, or a dispute, acknowledge empathetically and mention a human agent will follow up.
+- If the buyer expresses anger, fraud, or a dispute, or asks for a human / customer support, acknowledge empathetically and tell them they can chat with support on WhatsApp at ${process.env.SUPPORT_WHATSAPP_DISPLAY || "0788 371 081"} (direct WhatsApp chat).
 
 End your reply with a line: SOURCES: comma-separated chunk titles used.`;
 };
@@ -117,6 +136,7 @@ const generateBuyerResponse = async ({
     toolContext = "",
     answerHint = "",
     isProductFinding = false,
+    assistantMode = "general",
     catalogProducts = [],
 } = {}) => {
     const productChunks = chunks.filter((c) => c.source === "product_docs");
@@ -135,6 +155,7 @@ const generateBuyerResponse = async ({
                 hasProducts: productChunks.length > 0 || catalogProducts.length > 0,
                 isLoggedIn,
                 isProductFinding,
+                assistantMode,
             }),
         },
         ...historyMessages,
@@ -147,6 +168,7 @@ const generateBuyerResponse = async ({
                     : "",
                 toolContext ? `\nAgent actions:\n${toolContext}` : "",
                 answerHint ? `\nGuidance: ${answerHint}` : "",
+                `\nAssistant mode: ${assistantMode || "general"}`,
                 `\nBuyer question:\n${userMessage}`,
             ].filter(Boolean).join("\n"),
         },

@@ -135,13 +135,49 @@ const COMMON_PRODUCT_INTENTS = {
     },
     shirt: {
         primary: "t-shirt",
-        keywords: ["t-shirt", "polo shirt", "cotton shirt", "men shirt", "women shirt"],
+        keywords: ["t-shirt", "tee shirt", "cotton t-shirt", "men t-shirt", "women t-shirt", "casual t-shirt"],
         productType: "t-shirt",
         categoryHint: "apparel",
     },
     shirts: {
         primary: "t-shirt",
-        keywords: ["t-shirt", "polo shirt", "cotton shirt", "men shirt", "women shirt"],
+        keywords: ["t-shirt", "tee shirt", "cotton t-shirt", "men t-shirt", "women t-shirt", "casual t-shirt"],
+        productType: "t-shirt",
+        categoryHint: "apparel",
+    },
+    "t-shirt": {
+        primary: "t-shirt",
+        keywords: ["t-shirt", "tee shirt", "cotton t-shirt", "printed t-shirt", "plain t-shirt"],
+        productType: "t-shirt",
+        categoryHint: "apparel",
+    },
+    "t-shirts": {
+        primary: "t-shirt",
+        keywords: ["t-shirt", "tee shirt", "cotton t-shirt", "printed t-shirt", "plain t-shirt"],
+        productType: "t-shirt",
+        categoryHint: "apparel",
+    },
+    tshirt: {
+        primary: "t-shirt",
+        keywords: ["t-shirt", "tee shirt", "cotton t-shirt", "printed t-shirt"],
+        productType: "t-shirt",
+        categoryHint: "apparel",
+    },
+    tshirts: {
+        primary: "t-shirt",
+        keywords: ["t-shirt", "tee shirt", "cotton t-shirt", "printed t-shirt"],
+        productType: "t-shirt",
+        categoryHint: "apparel",
+    },
+    tee: {
+        primary: "t-shirt",
+        keywords: ["t-shirt", "tee shirt", "cotton tee"],
+        productType: "t-shirt",
+        categoryHint: "apparel",
+    },
+    tees: {
+        primary: "t-shirt",
+        keywords: ["t-shirt", "tee shirt", "cotton tee"],
         productType: "t-shirt",
         categoryHint: "apparel",
     },
@@ -177,23 +213,108 @@ const COMMON_PRODUCT_INTENTS = {
     },
 };
 
+const COLOR_WORDS = new Set([
+    "green", "red", "blue", "black", "white", "yellow", "pink", "purple", "orange",
+    "brown", "grey", "gray", "gold", "silver", "beige", "navy", "khaki", "cream",
+]);
+
+const PHRASE_PRODUCT_PATTERNS = [
+    {
+        test: /\b(t[\s-]?shirts?|tees?)\b/i,
+        primary: "t-shirt",
+        keywords: ["t-shirt", "tee shirt", "cotton t-shirt", "printed t-shirt", "plain t-shirt"],
+        productType: "t-shirt",
+        categoryHint: "apparel",
+    },
+    {
+        test: /\b(polo\s*shirts?)\b/i,
+        primary: "polo shirt",
+        keywords: ["polo shirt", "cotton polo", "men polo"],
+        productType: "polo shirt",
+        categoryHint: "apparel",
+    },
+    {
+        test: /\b(hoodies?|sweatshirts?)\b/i,
+        primary: "hoodie",
+        keywords: ["hoodie", "sweatshirt", "pullover hoodie"],
+        productType: "hoodie",
+        categoryHint: "apparel",
+    },
+    {
+        test: /\b(jeans?|denim\s*pants?)\b/i,
+        primary: "jeans",
+        keywords: ["jeans", "denim jeans", "men jeans"],
+        productType: "jeans",
+        categoryHint: "apparel",
+    },
+    {
+        test: /\b(sneakers?|running\s*shoes?)\b/i,
+        primary: "sneakers",
+        keywords: ["sneakers", "running shoes", "sports shoes"],
+        productType: "sneakers",
+        categoryHint: "footwear",
+    },
+    {
+        test: /\b(led\s*lights?|light\s*bulbs?|desk\s*lamps?)\b/i,
+        primary: "led light",
+        keywords: ["led light", "led bulb", "desk lamp"],
+        productType: "led light",
+        categoryHint: "lighting",
+    },
+];
+
 const inferCommonProductIntent = (search = "") => {
     const original = normalizeTerm(search);
-    if (!original || original.includes(" ")) return null;
-    const intent = COMMON_PRODUCT_INTENTS[original];
-    if (!intent) return null;
+    if (!original) return null;
 
-    return {
-        original,
-        correctedQuery: intent.primary,
-        primary: intent.primary,
-        keywords: uniqueTerms([intent.primary, ...intent.keywords, original]),
-        productType: intent.productType || intent.primary,
-        categoryHint: intent.categoryHint || "",
-        userIntent: "",
-        exactPhrase: intent.primary,
-        aiExpanded: false,
-    };
+    // Phrase / multi-word family detection first (also covers "t-shirts").
+    for (const pattern of PHRASE_PRODUCT_PATTERNS) {
+        if (!pattern.test.test(original)) continue;
+        const colors = original.split(" ").filter((token) => COLOR_WORDS.has(token));
+        const primary = colors.length
+            ? `${colors[0]} ${pattern.primary}`
+            : pattern.primary;
+        return {
+            original,
+            correctedQuery: primary,
+            primary,
+            keywords: uniqueTerms([
+                primary,
+                pattern.primary,
+                ...pattern.keywords,
+                ...colors.map((color) => `${color} ${pattern.primary}`),
+                original,
+            ]),
+            productType: pattern.productType,
+            categoryHint: pattern.categoryHint,
+            userIntent: colors.length
+                ? `Buyer wants a ${colors.join("/")} ${pattern.productType} (match by look/color even if title wording differs)`
+                : `Buyer wants ${pattern.productType} (ignore unrelated categories)`,
+            exactPhrase: primary,
+            aiExpanded: false,
+            visualIntent: true,
+        };
+    }
+
+    // Single-token intents
+    if (!original.includes(" ")) {
+        const intent = COMMON_PRODUCT_INTENTS[original];
+        if (!intent) return null;
+        return {
+            original,
+            correctedQuery: intent.primary,
+            primary: intent.primary,
+            keywords: uniqueTerms([intent.primary, ...intent.keywords, original]),
+            productType: intent.productType || intent.primary,
+            categoryHint: intent.categoryHint || "",
+            userIntent: `Buyer wants ${intent.primary}`,
+            exactPhrase: intent.primary,
+            aiExpanded: false,
+            visualIntent: Boolean(intent.categoryHint === "apparel"),
+        };
+    }
+
+    return null;
 };
 
 const basicQueryCleanup = (search = "") => {
@@ -258,9 +379,12 @@ const setCachedQuery = (key, value) => {
 
 const shouldSkipLlmExpansion = (baseline = {}) => {
     if (!baseline.original) return true;
-    if (baseline.productType) return true;
+    // Rule-based intent already strong enough (including multi-word apparel).
+    if (baseline.productType && baseline.categoryHint) return true;
+    if (baseline.visualIntent) return true;
     const words = baseline.original.split(" ").filter((part) => part.length > 1);
-    return words.length >= 3;
+    // Keep LLM for short ambiguous queries only; long queries already have enough tokens for ES.
+    return words.length >= 4;
 };
 
 const buildContextHints = (context = {}) => {
@@ -302,10 +426,15 @@ const expandSearchQuery = async (search = "", context = {}, { fast = false } = {
                     "You help B2B wholesale buyers search UZA Bulk (1688-sourced catalog).",
                     `User typed: "${baseline.original}"`,
                     ...(contextLines.length ? ["", ...contextLines] : []),
-                    "Understand what product they want. Fix spelling/typos. Output search terms for Elasticsearch.",
+                    "Understand WHAT product they need, even if catalog titles use different wording.",
+                    "Think visually: color, shape, garment type, material — as if matching a product photo.",
+                    "Fix spelling/typos. Prefer concrete product types over vague words.",
+                    "For apparel (t-shirt/shirt/hoodie), NEVER expand into lighting, lamps, bulbs, or electronics.",
+                    "For lighting queries, do not expand into apparel.",
                     "For ambiguous short queries, assume the MOST COMMONLY WHOLESALED variant.",
                     "Examples: bottles -> water bottles; cups -> drinking cups; bags -> tote/handbags;",
-                    "lights -> LED lights; chairs -> office chairs; watches -> smart watches.",
+                    "lights -> LED lights; chairs -> office chairs; watches -> smart watches;",
+                    "green t-shirt -> green cotton t-shirt / tee (apparel only).",
                     "Use shopper history only when it clearly matches the same intent.",
                     "Put the preferred/common subtype first in primary, exact_phrase, and keywords.",
                     "Return JSON only (no markdown):",
@@ -322,14 +451,15 @@ const expandSearchQuery = async (search = "", context = {}, { fast = false } = {
                     "primary = best short English wholesale search phrase (2-5 words).",
                     "keywords = up to 8 variants: synonyms, plural/singular, material, color, category.",
                     "exact_phrase = phrase most likely to match product title exactly.",
-                    "user_intent = one short sentence describing what the buyer is looking for.",
+                    "user_intent = one short sentence describing the product look/need for visual similarity matching.",
+                    "category_hint = apparel|lighting|footwear|bags|drinkware|eyewear|electronics|furniture|stationery|health or empty.",
                 ].join("\n"),
             }],
             temperature: 0.15,
         });
         const llmTimeoutMs = Math.min(
-            Math.max(Number(process.env.SEARCH_LLM_TIMEOUT_MS || 4000), 1500),
-            12000
+            Math.max(Number(process.env.SEARCH_LLM_TIMEOUT_MS || 2200), 1200),
+            5000
         );
         let timer;
         const content = await Promise.race([

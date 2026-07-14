@@ -130,7 +130,13 @@ const buildAssistantActions = ({
         });
     }
 
-    if (/contact|human|agent|support|help me|complaint/.test(q)) {
+    if (/contact|human|agent|support|help me|complaint|whatsapp|customer\s*service/.test(q)) {
+        push({
+            type: "whatsapp",
+            label: "Chat on WhatsApp",
+            url: process.env.SUPPORT_WHATSAPP_URL || "https://wa.me/250788371081",
+            message: "Hi UZA Bulk support, I need help from the buyer assistant.",
+        });
         push({ type: "navigate", label: "Contact support", route: "CONTACT_US" });
     }
 

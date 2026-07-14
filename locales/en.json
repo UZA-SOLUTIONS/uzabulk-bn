@@ -130,11 +130,47 @@
 	"cursor id 4776565595369926962 not found": "cursor id 4776565595369926962 not found",
 	"cursor id 2420158958381149279 not found": "cursor id 2420158958381149279 not found",
 	"cursor id 11900085919277774 not found": "cursor id 11900085919277774 not found",
-        "connection <monitor> to 8": {
-            "211": {
-                "56": {
-                    "133": "27017 timed out"
-                }
-            }
-        }
+	"connection <monitor> to 8": {
+		"211": {
+			"56": {
+				"133": "27017 timed out"
+			}
+		}
+	},
+	"connection 10 to 8": {
+		"211": {
+			"56": {
+				"133": "27017 timed out"
+			}
+		}
+	},
+	"connection 5 to 8": {
+		"211": {
+			"56": {
+				"133": "27017 timed out"
+			}
+		}
+	},
+	"SESSION_HISTORY": "SESSION_HISTORY",
+	"connection 50 to 8": {
+		"211": {
+			"56": {
+				"133": "27017 timed out"
+			}
+		}
+	},
+	"connection 9 to 8": {
+		"211": {
+			"56": {
+				"133": "27017 timed out"
+			}
+		}
+	},
+	"Connection to 8": {
+		"211": {
+			"56": {
+				"133": "27017 interrupted due to server monitor timeout"
+			}
+		}
+	}
 }
