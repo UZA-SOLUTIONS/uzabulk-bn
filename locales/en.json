@@ -1,178 +1,179 @@
 {
-	"RESET_PASSWORD_LINK": "Reset password link sent to your email.",
-	"INVALID_USER_TYPE": "Invalid user type.",
-	"EMAIL_ALREADY_EXIST": "Email already exists.",
-	"OTP_USED": "Something went wrong, please re-generate the OTP and try again.",
-	"VALID_EMAIL": "Email verified successfully.",
-	"INVALID_EMAIL": "Invaid email address.",
-	"USER_NOT_FOUND": "User not found.",
-	"INVALID_VERIFICATION_CODE": "OTP not matched.",
-	"CODE_VERIFIED_SUCCESSS": "OTP verified successfully.",
-	"OTP_SENT_TO_EMAIL": "OTP sent to your email address.",
-	"ACCOUNT_BLOCKED": "Your account has been blocked by admin!",
-	"INVALID_TOKEN": "Token Expired!",
-	"INCORRECT_PASSWORD": "Incorrect Password! Please try again.",
-	"CHANGE_PASSWORD_SUCCESS": "Password changed successfully!",
-	"SUCCESS": "Success!",
-	"LOGIN_SUCCESS": "Login successfully!",
-	"PROFILE_UPDATE_SUCCESS": "Profile updated successfully!",
-	"LOGOUT_SUCCESS": "Log out successfully!",
-	"RECORD_FOUND": "Record found successfully.",
-	"RESET_PASSWORD_SUCCESS": "The password reset was successful.",
-	"VERIFICATION_CODE_EXPIRED": "The verification code has expired.",
-	"NOT_AUTHORIZED": "You are not authorized to perform this action.",
-	"USER_DETAILS_SUCCESS": "User details retrieved successfully.",
-	"USING_OLD_PASSWORD": "Please choose a different password; you are trying to change it to the same as the old one.",
-	"USER_REMOVE_SUCCESS": "User removed successfully.",
-	"TOKEN_VERIFIED": "Token verified.",
-	"AUTHORIZATION_TOKEN_IS_REQUIRED": "Authorization token is required",
-	"VALID_MOBILE_NUMBER": "Provide valid mobile number",
-	"OTP_SENT_TO_EMAIL_AND_MOBILE_NUMBER": "OTP has been sent to your email and mobile number.",
-	"MOBILE_NUMBER_ALREADY_VERIFIED": "An OTP has been sent to your email address.",
-	"OTP_SENT_TO_MOBILE_NUMBER": "An OTP has been sent to your mobile number.",
-	"RECORD_CREATED": "The record has been created.",
-	"RECORD_NOT_FOUND": "The record was not found.",
-	"RECORD_UPDATED": "The record has been updated successfully.",
-	"PAY_TO_CONFIRM_ORDER": "Please pay to confirm your order.",
-	"CART_UPDATED": "The cart has been updated.",
-	"RECORD_DELETED": "Record deleted successfully.",
-	"OTP_SENT_TO_YOUR_EMAIL": "An OTP has been sent to your email address.",
-	"OTP_SENT_TO_YOUR_MOBILE_NUMBER": "An OTP has been sent to your mobile number.",
-	"REGISTER_SUCCESS": "Registration successful!",
-	"OTP_NOT_MATCHED": "The entered OTP does not match. Please try again.",
-	"REGISTERED_AS_ADMIN": "Your account is already registered as an administrator.",
-	"DATA_SUCCESS": "Data Success",
-	"INVALID_MOBILE_NUMBER": "Invalid mobile number",
-	"OUT_OF_STOCK": "The product is out of stock",
-	"INVALID_CART_ID": "Provided cart id is not valid",
-	"CART_DELETED": "Cart deleted successfully",
-	"variation_id is not defined": "Variation ID is not defined",
-	"PRODUCT_ATTRIBUTE_TERM_ID_IS_INVALID": "Product attribute term ID is invalid",
-	"PRODUCT_ATTRIBUTE_ID_IS_INVALID": "Please ensure the product attribute ID is correct.",
-	"PRODUCT_ATTRIBUTE_TERMS_IS_INVALID": "Please check the validity of the product attribute terms.",
-	"PRICE_TIERS_MISSING": "No price tiers available.",
-	"CART_UPDATED_SUCCESS": "Cart updated successfully",
-	"shipping_address is not allowed to be empty": "Shipping Address is not allowed to be empty",
-	"ADDRESS_IS_INVALID": "Please provide a valid address.",
-	"ORDER_SUCCESS": "Order placed successfully.",
-	"The maximum quantity is 12 item(s).": "The maximum quantity is 12 item(s).",
-	"PROFILE_UPDATED_SUCCESS": "Profile updated successfully.",
-	"INVALID_CURRENT_PASSWORD": "Current password is incorrect.",
-	"CHOOSE_DIFF_PASSWORD": "Please choose a different password; you are trying to change it to the same as the old one.",
-	"PASSWORD_UPDATED": "Password updated successfully",
-	"ORDERS_FOUND": "Orders found successfully",
-	"name is required": "Name is required",
-	"ADDRESS_ADDED": "Address added successfully",
-	"NO_RECORD_FOUND": "No record found",
-	"ADDRESS_UPDATED": "Address updated successfully",
-	"PROMOCODE_COUPON_INVALID": "Promo code is not valid.",
-	"MOBILE_NUMBER_ALREADY_EXIST": "The mobile number already exists in our records.",
-	"SOMETHING_WENT_WRONG": "Something went wrong, please try again later.",
-	"MOBILE_NUMBER_UPDATED": "Mobile number updated successfully.",
-	"EMAIL_UPDATED": "Email updated successfully",
-	"VERIFY_MIN_QUENTITY": "Something went wrong. Please double-check the minimum quantity for each product.",
-	"REQUIRED_DEVICE_ID": "Device ID Required.",
-	"CART_IDS_INVALID": "Invalid request of cart details.",
-	"Cannot read properties of undefined (reading '_id')": "Cannot read properties of undefined (reading '_id')",
-	"The product has only 3 items(s) left.": "The product has only 3 items(s) left.",
-	"Cannot set headers after they are sent to the client": "Cannot set headers after they are sent to the client",
-	"shipping_address is required": "shipping_address is required",
-	"shipping_address is not allowed": "shipping_address is not allowed",
-	"cart_ids must be an array": "cart_ids must be an array",
-	"allowNull is not defined": "allowNull is not defined",
-	"Arguments must be aggregate pipeline operators": "Arguments must be aggregate pipeline operators",
-	"Cast to ObjectId failed for value \"https://cbu01.alicdn.com/img/ibank/O1CN01eLFnJV1Bs2yIMLeyP_!!0-0-cib.jpg\" (type string) at path \"_id\" for model \"File\"": "Cast to ObjectId failed for value \"https://cbu01.alicdn.com/img/ibank/O1CN01eLFnJV1Bs2yIMLeyP_!!0-0-cib.jpg\" (type string) at path \"_id\" for model \"File\"",
-	"lineData is not defined": "lineData is not defined",
-	"Cast to ObjectId failed for value \"https://global-img-cdn.1688.com/img/ibank/O1CN01ycmEuA2A1Y42fjFx3_!!2208836638143-0-cib.jpg\" (type string) at path \"_id\" for model \"File\"": "Cast to ObjectId failed for value \"https://global-img-cdn.1688.com/img/ibank/O1CN01ycmEuA2A1Y42fjFx3_!!2208836638143-0-cib.jpg\" (type string) at path \"_id\" for model \"File\"",
-	"PRODUCT_VARIATION_IS_INVALID": "PRODUCT_VARIATION_IS_INVALID",
-	"INVALID_CATEGORY_ID": "No category found!",
-	"PRODUCT_OUT_OF_STOCK": "Product is out of stock!",
-	"INVALID_PRODUCT_ID": "Product not found!",
-	"Operation `carts.aggregate()` buffering timed out after 10000ms": "Operation `carts.aggregate()` buffering timed out after 10000ms",
-	"Search failed": "Search failed",
-	"_model is not defined": "_model is not defined",
-	"Invalid login: 535 Authentication failure[0] [@ud010301]": "Invalid login: 535 Authentication failure[0] [@ud010301]",
-	"mobileNumber is not allowed": "mobileNumber is not allowed",
-	"read ECONNRESET": "read ECONNRESET",
-	"Operation `products.find()` buffering timed out after 10000ms": "Operation `products.find()` buffering timed out after 10000ms",
-	"IMAGE_UPLOAD_SUCCESS": "IMAGE_UPLOAD_SUCCESS",
-	"Operation `categories.find()` buffering timed out after 10000ms": "Operation `categories.find()` buffering timed out after 10000ms",
-	"Connection to 8.211.56.133:27017 interrupted due to server monitor timeout": "Connection to 8.211.56.133:27017 interrupted due to server monitor timeout",
-	"Operation `productbehaviors.find()` buffering timed out after 10000ms": "Operation `productbehaviors.find()` buffering timed out after 10000ms",
-	"Command find requires authentication": "Command find requires authentication",
-	"Cannot read properties of undefined (reading 'find')": "Cannot read properties of undefined (reading 'find')",
-	"connect ETIMEDOUT 8.211.56.133:27017": "connect ETIMEDOUT 8.211.56.133:27017",
-	"400 <400> InternalError.Algo.InvalidParameter: Failed to download multimodal content": "400 <400> InternalError.Algo.InvalidParameter: Failed to download multimodal content",
-	"WELCOME": "WELCOME",
-	"EVENT_RECORDED": "EVENT_RECORDED",
-	"Connection pool for 8.211.56.133:27017 was cleared because another operation failed with: \"connect ETIMEDOUT 8.211.56.133:27017\"": "Connection pool for 8.211.56.133:27017 was cleared because another operation failed with: \"connect ETIMEDOUT 8.211.56.133:27017\"",
-	"connection <monitor> to 8.211.56.133:27017 closed": "connection <monitor> to 8.211.56.133:27017 closed",
-	"connection 3 to 8.211.56.133:27017 timed out": "connection 3 to 8.211.56.133:27017 timed out",
-	"connection 11 to 8.211.56.133:27017 timed out": "connection 11 to 8.211.56.133:27017 timed out",
-	"connection 7 to 8.211.56.133:27017 timed out": "connection 7 to 8.211.56.133:27017 timed out",
-	"connection 2 to 8.211.56.133:27017 timed out": "connection 2 to 8.211.56.133:27017 timed out",
-	"connection 4 to 8.211.56.133:27017 timed out": "connection 4 to 8.211.56.133:27017 timed out",
-	"connection 9 to 8.211.56.133:27017 timed out": "connection 9 to 8.211.56.133:27017 timed out",
-	"connection 1 to 8.211.56.133:27017 timed out": "connection 1 to 8.211.56.133:27017 timed out",
-	"req.nextPageOptions is not a function": "req.nextPageOptions is not a function",
-	"withRequestTimeout is not defined": "withRequestTimeout is not defined",
-	"ASSISTANT_REPLY": "ASSISTANT_REPLY",
-	"Cannot access 'order' before initialization": "Cannot access 'order' before initialization",
-	"PRODUCT_NAMES_TRANSLATED": "PRODUCT_NAMES_TRANSLATED",
-	"PRODUCT_DETAIL_TRANSLATED": "PRODUCT_DETAIL_TRANSLATED",
-	"Cannot read properties of null (reading 'categories')": "Cannot read properties of null (reading 'categories')",
-	"VARIATION_IS_REQUIRED": "VARIATION_IS_REQUIRED",
-	"cursor id 4650707270408100633 not found": "cursor id 4650707270408100633 not found",
-	"cursor id 1354286643581346201 not found": "cursor id 1354286643581346201 not found",
-	"cursor id 8817369841576710048 not found": "cursor id 8817369841576710048 not found",
-	"cursor id 8498184800308336669 not found": "cursor id 8498184800308336669 not found",
-	"cursor id 7274098642914260515 not found": "cursor id 7274098642914260515 not found",
-	"cursor id 4776565595369926962 not found": "cursor id 4776565595369926962 not found",
-	"cursor id 2420158958381149279 not found": "cursor id 2420158958381149279 not found",
-	"cursor id 11900085919277774 not found": "cursor id 11900085919277774 not found",
-	"connection <monitor> to 8": {
-		"211": {
-			"56": {
-				"133": "27017 timed out"
-			}
-		}
-	},
-	"connection 10 to 8": {
-		"211": {
-			"56": {
-				"133": "27017 timed out"
-			}
-		}
-	},
-	"connection 5 to 8": {
-		"211": {
-			"56": {
-				"133": "27017 timed out"
-			}
-		}
-	},
-	"SESSION_HISTORY": "SESSION_HISTORY",
-	"connection 50 to 8": {
-		"211": {
-			"56": {
-				"133": "27017 timed out"
-			}
-		}
-	},
-	"connection 9 to 8": {
-		"211": {
-			"56": {
-				"133": "27017 timed out"
-			}
-		}
-	},
-	"Connection to 8": {
-		"211": {
-			"56": {
-				"133": "27017 interrupted due to server monitor timeout"
-			}
-		}
-	},
-	"error while multiplanner was selecting best plan ": ": caused by :: operation exceeded time limit",
-	"IMAGE_URL_REQUIRED": "IMAGE_URL_REQUIRED"
+    "RESET_PASSWORD_LINK": "Reset password link sent to your email.",
+    "INVALID_USER_TYPE": "Invalid user type.",
+    "EMAIL_ALREADY_EXIST": "Email already exists.",
+    "OTP_USED": "Something went wrong, please re-generate the OTP and try again.",
+    "VALID_EMAIL": "Email verified successfully.",
+    "INVALID_EMAIL": "Invaid email address.",
+    "USER_NOT_FOUND": "User not found.",
+    "INVALID_VERIFICATION_CODE": "OTP not matched.",
+    "CODE_VERIFIED_SUCCESSS": "OTP verified successfully.",
+    "OTP_SENT_TO_EMAIL": "OTP sent to your email address.",
+    "ACCOUNT_BLOCKED": "Your account has been blocked by admin!",
+    "INVALID_TOKEN": "Token Expired!",
+    "INCORRECT_PASSWORD": "Incorrect Password! Please try again.",
+    "CHANGE_PASSWORD_SUCCESS": "Password changed successfully!",
+    "SUCCESS": "Success!",
+    "LOGIN_SUCCESS": "Login successfully!",
+    "PROFILE_UPDATE_SUCCESS": "Profile updated successfully!",
+    "LOGOUT_SUCCESS": "Log out successfully!",
+    "RECORD_FOUND": "Record found successfully.",
+    "RESET_PASSWORD_SUCCESS": "The password reset was successful.",
+    "VERIFICATION_CODE_EXPIRED": "The verification code has expired.",
+    "NOT_AUTHORIZED": "You are not authorized to perform this action.",
+    "USER_DETAILS_SUCCESS": "User details retrieved successfully.",
+    "USING_OLD_PASSWORD": "Please choose a different password; you are trying to change it to the same as the old one.",
+    "USER_REMOVE_SUCCESS": "User removed successfully.",
+    "TOKEN_VERIFIED": "Token verified.",
+    "AUTHORIZATION_TOKEN_IS_REQUIRED": "Authorization token is required",
+    "VALID_MOBILE_NUMBER": "Provide valid mobile number",
+    "OTP_SENT_TO_EMAIL_AND_MOBILE_NUMBER": "OTP has been sent to your email and mobile number.",
+    "MOBILE_NUMBER_ALREADY_VERIFIED": "An OTP has been sent to your email address.",
+    "OTP_SENT_TO_MOBILE_NUMBER": "An OTP has been sent to your mobile number.",
+    "RECORD_CREATED": "The record has been created.",
+    "RECORD_NOT_FOUND": "The record was not found.",
+    "RECORD_UPDATED": "The record has been updated successfully.",
+    "PAY_TO_CONFIRM_ORDER": "Please pay to confirm your order.",
+    "CART_UPDATED": "The cart has been updated.",
+    "RECORD_DELETED": "Record deleted successfully.",
+    "OTP_SENT_TO_YOUR_EMAIL": "An OTP has been sent to your email address.",
+    "OTP_SENT_TO_YOUR_MOBILE_NUMBER": "An OTP has been sent to your mobile number.",
+    "REGISTER_SUCCESS": "Registration successful!",
+    "OTP_NOT_MATCHED": "The entered OTP does not match. Please try again.",
+    "REGISTERED_AS_ADMIN": "Your account is already registered as an administrator.",
+    "DATA_SUCCESS": "Data Success",
+    "INVALID_MOBILE_NUMBER": "Invalid mobile number",
+    "OUT_OF_STOCK": "The product is out of stock",
+    "INVALID_CART_ID": "Provided cart id is not valid",
+    "CART_DELETED": "Cart deleted successfully",
+    "variation_id is not defined": "Variation ID is not defined",
+    "PRODUCT_ATTRIBUTE_TERM_ID_IS_INVALID": "Product attribute term ID is invalid",
+    "PRODUCT_ATTRIBUTE_ID_IS_INVALID": "Please ensure the product attribute ID is correct.",
+    "PRODUCT_ATTRIBUTE_TERMS_IS_INVALID": "Please check the validity of the product attribute terms.",
+    "PRICE_TIERS_MISSING": "No price tiers available.",
+    "CART_UPDATED_SUCCESS": "Cart updated successfully",
+    "shipping_address is not allowed to be empty": "Shipping Address is not allowed to be empty",
+    "ADDRESS_IS_INVALID": "Please provide a valid address.",
+    "ORDER_SUCCESS": "Order placed successfully.",
+    "The maximum quantity is 12 item(s).": "The maximum quantity is 12 item(s).",
+    "PROFILE_UPDATED_SUCCESS": "Profile updated successfully.",
+    "INVALID_CURRENT_PASSWORD": "Current password is incorrect.",
+    "CHOOSE_DIFF_PASSWORD": "Please choose a different password; you are trying to change it to the same as the old one.",
+    "PASSWORD_UPDATED": "Password updated successfully",
+    "ORDERS_FOUND": "Orders found successfully",
+    "name is required": "Name is required",
+    "ADDRESS_ADDED": "Address added successfully",
+    "NO_RECORD_FOUND": "No record found",
+    "ADDRESS_UPDATED": "Address updated successfully",
+    "PROMOCODE_COUPON_INVALID": "Promo code is not valid.",
+    "MOBILE_NUMBER_ALREADY_EXIST": "The mobile number already exists in our records.",
+    "SOMETHING_WENT_WRONG": "Something went wrong, please try again later.",
+    "MOBILE_NUMBER_UPDATED": "Mobile number updated successfully.",
+    "EMAIL_UPDATED": "Email updated successfully",
+    "VERIFY_MIN_QUENTITY": "Something went wrong. Please double-check the minimum quantity for each product.",
+    "REQUIRED_DEVICE_ID": "Device ID Required.",
+    "CART_IDS_INVALID": "Invalid request of cart details.",
+    "Cannot read properties of undefined (reading '_id')": "Cannot read properties of undefined (reading '_id')",
+    "The product has only 3 items(s) left.": "The product has only 3 items(s) left.",
+    "Cannot set headers after they are sent to the client": "Cannot set headers after they are sent to the client",
+    "shipping_address is required": "shipping_address is required",
+    "shipping_address is not allowed": "shipping_address is not allowed",
+    "cart_ids must be an array": "cart_ids must be an array",
+    "allowNull is not defined": "allowNull is not defined",
+    "Arguments must be aggregate pipeline operators": "Arguments must be aggregate pipeline operators",
+    "Cast to ObjectId failed for value \"https://cbu01.alicdn.com/img/ibank/O1CN01eLFnJV1Bs2yIMLeyP_!!0-0-cib.jpg\" (type string) at path \"_id\" for model \"File\"": "Cast to ObjectId failed for value \"https://cbu01.alicdn.com/img/ibank/O1CN01eLFnJV1Bs2yIMLeyP_!!0-0-cib.jpg\" (type string) at path \"_id\" for model \"File\"",
+    "lineData is not defined": "lineData is not defined",
+    "Cast to ObjectId failed for value \"https://global-img-cdn.1688.com/img/ibank/O1CN01ycmEuA2A1Y42fjFx3_!!2208836638143-0-cib.jpg\" (type string) at path \"_id\" for model \"File\"": "Cast to ObjectId failed for value \"https://global-img-cdn.1688.com/img/ibank/O1CN01ycmEuA2A1Y42fjFx3_!!2208836638143-0-cib.jpg\" (type string) at path \"_id\" for model \"File\"",
+    "PRODUCT_VARIATION_IS_INVALID": "PRODUCT_VARIATION_IS_INVALID",
+    "INVALID_CATEGORY_ID": "No category found!",
+    "PRODUCT_OUT_OF_STOCK": "Product is out of stock!",
+    "INVALID_PRODUCT_ID": "Product not found!",
+    "Operation `carts.aggregate()` buffering timed out after 10000ms": "Operation `carts.aggregate()` buffering timed out after 10000ms",
+    "Search failed": "Search failed",
+    "_model is not defined": "_model is not defined",
+    "Invalid login: 535 Authentication failure[0] [@ud010301]": "Invalid login: 535 Authentication failure[0] [@ud010301]",
+    "mobileNumber is not allowed": "mobileNumber is not allowed",
+    "read ECONNRESET": "read ECONNRESET",
+    "Operation `products.find()` buffering timed out after 10000ms": "Operation `products.find()` buffering timed out after 10000ms",
+    "IMAGE_UPLOAD_SUCCESS": "IMAGE_UPLOAD_SUCCESS",
+    "Operation `categories.find()` buffering timed out after 10000ms": "Operation `categories.find()` buffering timed out after 10000ms",
+    "Connection to 8.211.56.133:27017 interrupted due to server monitor timeout": "Connection to 8.211.56.133:27017 interrupted due to server monitor timeout",
+    "Operation `productbehaviors.find()` buffering timed out after 10000ms": "Operation `productbehaviors.find()` buffering timed out after 10000ms",
+    "Command find requires authentication": "Command find requires authentication",
+    "Cannot read properties of undefined (reading 'find')": "Cannot read properties of undefined (reading 'find')",
+    "connect ETIMEDOUT 8.211.56.133:27017": "connect ETIMEDOUT 8.211.56.133:27017",
+    "400 <400> InternalError.Algo.InvalidParameter: Failed to download multimodal content": "400 <400> InternalError.Algo.InvalidParameter: Failed to download multimodal content",
+    "WELCOME": "WELCOME",
+    "EVENT_RECORDED": "EVENT_RECORDED",
+    "Connection pool for 8.211.56.133:27017 was cleared because another operation failed with: \"connect ETIMEDOUT 8.211.56.133:27017\"": "Connection pool for 8.211.56.133:27017 was cleared because another operation failed with: \"connect ETIMEDOUT 8.211.56.133:27017\"",
+    "connection <monitor> to 8.211.56.133:27017 closed": "connection <monitor> to 8.211.56.133:27017 closed",
+    "connection 3 to 8.211.56.133:27017 timed out": "connection 3 to 8.211.56.133:27017 timed out",
+    "connection 11 to 8.211.56.133:27017 timed out": "connection 11 to 8.211.56.133:27017 timed out",
+    "connection 7 to 8.211.56.133:27017 timed out": "connection 7 to 8.211.56.133:27017 timed out",
+    "connection 2 to 8.211.56.133:27017 timed out": "connection 2 to 8.211.56.133:27017 timed out",
+    "connection 4 to 8.211.56.133:27017 timed out": "connection 4 to 8.211.56.133:27017 timed out",
+    "connection 9 to 8.211.56.133:27017 timed out": "connection 9 to 8.211.56.133:27017 timed out",
+    "connection 1 to 8.211.56.133:27017 timed out": "connection 1 to 8.211.56.133:27017 timed out",
+    "req.nextPageOptions is not a function": "req.nextPageOptions is not a function",
+    "withRequestTimeout is not defined": "withRequestTimeout is not defined",
+    "ASSISTANT_REPLY": "ASSISTANT_REPLY",
+    "Cannot access 'order' before initialization": "Cannot access 'order' before initialization",
+    "PRODUCT_NAMES_TRANSLATED": "PRODUCT_NAMES_TRANSLATED",
+    "PRODUCT_DETAIL_TRANSLATED": "PRODUCT_DETAIL_TRANSLATED",
+    "Cannot read properties of null (reading 'categories')": "Cannot read properties of null (reading 'categories')",
+    "VARIATION_IS_REQUIRED": "VARIATION_IS_REQUIRED",
+    "cursor id 4650707270408100633 not found": "cursor id 4650707270408100633 not found",
+    "cursor id 1354286643581346201 not found": "cursor id 1354286643581346201 not found",
+    "cursor id 8817369841576710048 not found": "cursor id 8817369841576710048 not found",
+    "cursor id 8498184800308336669 not found": "cursor id 8498184800308336669 not found",
+    "cursor id 7274098642914260515 not found": "cursor id 7274098642914260515 not found",
+    "cursor id 4776565595369926962 not found": "cursor id 4776565595369926962 not found",
+    "cursor id 2420158958381149279 not found": "cursor id 2420158958381149279 not found",
+    "cursor id 11900085919277774 not found": "cursor id 11900085919277774 not found",
+    "connection <monitor> to 8": {
+        "211": {
+            "56": {
+                "133": "27017 timed out"
+            }
+        }
+    },
+    "connection 10 to 8": {
+        "211": {
+            "56": {
+                "133": "27017 timed out"
+            }
+        }
+    },
+    "connection 5 to 8": {
+        "211": {
+            "56": {
+                "133": "27017 timed out"
+            }
+        }
+    },
+    "SESSION_HISTORY": "SESSION_HISTORY",
+    "connection 50 to 8": {
+        "211": {
+            "56": {
+                "133": "27017 timed out"
+            }
+        }
+    },
+    "connection 9 to 8": {
+        "211": {
+            "56": {
+                "133": "27017 timed out"
+            }
+        }
+    },
+    "Connection to 8": {
+        "211": {
+            "56": {
+                "133": "27017 interrupted due to server monitor timeout"
+            }
+        }
+    },
+    "error while multiplanner was selecting best plan ": ": caused by :: operation exceeded time limit",
+    "IMAGE_URL_REQUIRED": "IMAGE_URL_REQUIRED",
+    "ESCALATED_TO_AGENT": "ESCALATED_TO_AGENT"
 }
