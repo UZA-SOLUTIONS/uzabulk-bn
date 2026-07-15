@@ -8,6 +8,11 @@ const { deviceAuthentication, authentication } = require('../../middleware');
 
 router.post('/login', deviceAuthentication, validator.login, authController.login);
 
+router.get('/auth/google', authController.googleAuth);
+router.get('/auth/google/callback', authController.googleAuthCallback);
+router.get('/auth/google/client-config', authController.googleClientConfig);
+router.post('/auth/google/one-tap', deviceAuthentication, authController.googleOneTap);
+
 router.post('/verifyEmail', validator.verifyEmail, authController.verifyEmail);
 router.post('/verifyMobileNumber', validator.verifyMobileNumber, authController.verifyMobileNumber);
 router.post('/register', deviceAuthentication, validator.register, authController.register);

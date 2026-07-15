@@ -1,6 +1,7 @@
 const { attachProductMoqFields } = require('../modules/products/helper/moq');
 const { attachProductSupplierFields } = require('../modules/products/helper/supplier');
 const { attachProductRatingsFromStored } = require('../modules/products/helper/ratings');
+const { attachFallbackProductPrice } = require('../modules/products/helper/pricing');
 
 const toFixedNumber = (number, toFixed = 2, string = false) => {
     return number;
@@ -41,7 +42,9 @@ const exchange = (item, options) => {
     if (!item) return;
 
     attachProductRatingsFromStored(
-        attachProductSupplierFields(attachProductMoqFields(item))
+        attachProductSupplierFields(
+            attachProductMoqFields(attachFallbackProductPrice(item))
+        )
     );
     processItemPrice(item, options);
     processVariations(item.variations || item.variation, options);

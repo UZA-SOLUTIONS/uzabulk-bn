@@ -157,6 +157,32 @@ module.exports = {
         }
     },
 
+    track: async (req, res) => {
+        try {
+            const q = String(req.query.q || req.query.orderId || "").trim();
+            if (!q) {
+                return res.error("ORDER_ID_REQUIRED");
+            }
+
+            // Public track-by-number: no sign-in required when the order number exists.
+            let order = await Order.findForTrack(q, req.user?._id || null);
+
+            // If logged-in scoped lookup missed, fall back to global order-number match.
+            if (!order && req.user?._id) {
+                order = await Order.findForTrack(q, null);
+            }
+
+            if (!order) {
+                return res.error("ORDER_NOT_FOUND");
+            }
+
+            return res.success("RECORD_FOUND", order);
+        } catch (error) {
+            console.error(error);
+            res.error(error);
+        }
+    },
+
     checkout: async (req, res) => {
         try {
             const checkout = await module.exports.checkoutCalculationMiddleware(req);

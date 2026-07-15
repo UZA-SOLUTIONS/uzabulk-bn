@@ -562,74 +562,193 @@ const getPersonalizedProductPage = async (req, { limit, page = 1, skip, seedKey 
     return { ...pageResult, recentBrowsed };
 };
 
-const getPersonalizedNewArrivalsPage = async (req, { limit, page = 1, skip, seedKey = "", refresh = "" } = {}) => {
+const HOT_DEALS_SORT = { sold_count: -1, average_rating: -1, date_created_utc: -1 };
+
+const getTopInteractedProductIds = async ({ limit = 24 } = {}) => {
+    const cap = Math.max(1, Math.min(Number(limit) || 24, 64));
+    const since = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000);
+    const rows = await ProductBehavior.aggregate([
+        {
+            $match: {
+                product: { $ne: null },
+                created_at: { $gte: since },
+                eventType: { $in: ["view", "search", "add_to_cart", "update_cart", "checkout", "order"] },
+            },
+        },
+        {
+            $group: {
+                _id: "$product",
+                score: { $sum: { $ifNull: ["$score", 1] } },
+                events: { $sum: 1 },
+            },
+        },
+        { $sort: { score: -1, events: -1 } },
+        { $limit: cap },
+    ]);
+    return (rows || []).map((row) => row._id).filter(Boolean);
+};
+
+const mergeHotDealPools = ({ sold = [], interacted = [], recommended = [], limit = 12 } = {}) => {
+    const cap = Math.max(1, Number(limit) || 12);
+    const out = [];
+    const seen = new Set();
+
+    const pushUnique = (items = [], maxAdd = Infinity) => {
+        let added = 0;
+        for (const item of items) {
+            if (out.length >= cap || added >= maxAdd) break;
+            const id = String(item?._id || "");
+            if (!id || seen.has(id)) continue;
+            seen.add(id);
+            out.push(item);
+            added += 1;
+        }
+    };
+
+    // Highest sold first (~70%), then high-interaction / likely-to-visit last (~30%).
+    const soldSorted = [...(sold || [])].sort(
+        (a, b) => (Number(b?.sold_count) || 0) - (Number(a?.sold_count) || 0)
+    );
+    const soldSlots = Math.max(1, Math.ceil(cap * 0.7));
+    pushUnique(soldSorted.filter((row) => Number(row?.sold_count) >= 1), soldSlots);
+    pushUnique([...(recommended || []), ...(interacted || [])]);
+    pushUnique(soldSorted);
+    return out;
+};
+
+/**
+ * Hot Deals: sold_count desc first, then most interacted / likely-to-visit.
+ */
+const getPersonalizedNewArrivalsPage = async (req, { limit, page = 1, skip } = {}) => {
     const safeLimit = Math.max(1, Math.min(Number(limit) || DEFAULT_LIMIT, 64));
     const safePage = resolveCatalogPage(page, skip);
-    const compositeSeed = seedKey || `${buildCatalogSeedKey(req, refresh)}:arrivals`;
+    const offset = (safePage - 1) * safeLimit;
+    const poolSize = Math.min(Math.max(safeLimit * 3, 36), 80);
 
-    const identityQuery = getIdentityQuery(req);
-    let behaviors = [];
-    if (identityQuery && isMongoConnected()) {
-        behaviors = await withPromiseTimeout(
-            ProductBehavior.find(identityQuery)
-                .sort({ created_at: -1 })
-                .limit(80)
-                .populate({ path: "product", select: "name categories average_rating sold_count" })
+    if (!isMongoConnected()) {
+        return { items: [], hasMore: false, total: 0 };
+    }
+
+    const cardSelect = {
+        name: 1,
+        price: 1,
+        bestSeller: 1,
+        compare_price: 1,
+        images: 1,
+        featured_image: 1,
+        average_rating: 1,
+        rating_count: 1,
+        short_description: 1,
+        manage_stock: 1,
+        stock_quantity: 1,
+        stock_status: 1,
+        isFeatured: 1,
+        date_created_utc: 1,
+        featureAttribute: 1,
+        offerId: 1,
+        categories: 1,
+        min_order_qty: 1,
+        sold_count: 1,
+    };
+
+    const loadByIds = async (ids = []) => {
+        const unique = [...new Set((ids || []).map((id) => String(id)).filter(Boolean))];
+        if (!unique.length) return [];
+        const rows = await Product.find({ _id: { $in: unique }, status: "active" })
+            .select(cardSelect)
+            .populate({ path: "featured_image", select: "link -_id" })
+            .lean();
+        const byId = new Map(rows.map((row) => [String(row._id), row]));
+        return unique.map((id) => byId.get(id)).filter(Boolean);
+    };
+
+    // Later pages keep walking sold ranking.
+    if (safePage > 1) {
+        const rows = await withPromiseTimeout(
+            Product.find({ status: "active", sold_count: { $gte: 1 } })
+                .sort(HOT_DEALS_SORT)
+                .skip(offset)
+                .limit(safeLimit + 8)
+                .select(cardSelect)
+                .populate({ path: "featured_image", select: "link -_id" })
                 .lean(),
-            4000,
+            8000,
+            []
+        );
+        const usable = balanceCatalogProducts(rows || []);
+        usable.sort((a, b) => (Number(b?.sold_count) || 0) - (Number(a?.sold_count) || 0));
+        const items = usable.slice(0, safeLimit);
+        return {
+            items,
+            hasMore: usable.length > safeLimit,
+            total: offset + items.length + (usable.length > safeLimit ? 1 : 0),
+        };
+    }
+
+    const [soldRows, interactedIds, recommendedRows] = await Promise.all([
+        withPromiseTimeout(
+            Product.find({ status: "active", sold_count: { $gte: 1 } })
+                .sort(HOT_DEALS_SORT)
+                .limit(poolSize)
+                .select(cardSelect)
+                .populate({ path: "featured_image", select: "link -_id" })
+                .lean(),
+            8000,
+            []
+        ),
+        withPromiseTimeout(getTopInteractedProductIds({ limit: poolSize }), 4000, []),
+        withPromiseTimeout(
+            getRecommendedProducts(req, {
+                limit: Math.min(poolSize, 24),
+                refresh: req?.query?.refresh || "",
+            }),
+            5000,
+            []
+        ),
+    ]);
+
+    let sold = Array.isArray(soldRows) ? soldRows : [];
+    if (!sold.length) {
+        sold = await withPromiseTimeout(
+            Product.find({ status: "active" })
+                .sort(HOT_DEALS_SORT)
+                .limit(poolSize)
+                .select(cardSelect)
+                .populate({ path: "featured_image", select: "link -_id" })
+                .lean(),
+            8000,
             []
         );
     }
 
-    if (!behaviors.length) {
-        return getRotatedProductPage({
-            limit: safeLimit,
-            page: safePage,
-            seedKey: compositeSeed,
-        });
+    const interactedRows = await withPromiseTimeout(loadByIds(interactedIds), 4000, []);
+
+    let merged = mergeHotDealPools({
+        sold: [...(sold || [])],
+        interacted: [...(interactedRows || [])],
+        recommended: [...(recommendedRows || [])],
+        limit: poolSize,
+    });
+
+    if (!merged.length) {
+        const fallback = await withPromiseTimeout(
+            getRotatedProductPage({
+                limit: safeLimit + 4,
+                page: 1,
+                seedKey: buildCatalogSeedKey(req, req?.query?.refresh || "hot-deals"),
+            }),
+            5000,
+            { items: [] }
+        );
+        merged = Array.isArray(fallback?.items) ? fallback.items : [];
     }
 
-    const preferredCategoryIds = getPreferredCategoryIds(behaviors);
-    const poolLimit = Math.min(200, safePage * safeLimit + safeLimit + 48);
-    const relatedOffset = getSeedNumber(`${compositeSeed}:${preferredCategoryIds.join(",")}`) % 80;
-
-    let candidates = [];
-    if (preferredCategoryIds.length) {
-        candidates = balanceCatalogProducts(await populateProductCards(
-            Product.find({
-                status: "active",
-                categories: { $in: preferredCategoryIds },
-            })
-                .sort(usableCatalogSort)
-                .skip(relatedOffset)
-                .limit(poolLimit)
-        ));
-    }
-
-    if (candidates.length < poolLimit) {
-        const rotated = await getRotatedProducts({
-            limit: poolLimit - candidates.length,
-            seedKey: compositeSeed,
-        });
-        const seen = new Set(candidates.map((product) => String(product._id)));
-        rotated.forEach((product) => {
-            const id = String(product._id);
-            if (!seen.has(id)) {
-                seen.add(id);
-                candidates.push(product);
-            }
-        });
-    }
-
-    const ranked = balanceCatalogProducts(scoreInNode(behaviors, dedupeProductList(candidates)));
-    const start = (safePage - 1) * safeLimit;
-    const items = ranked.slice(start, start + safeLimit);
-    const hasMore = start + safeLimit < ranked.length;
-
+    const usable = balanceCatalogProducts(merged || []);
+    const items = usable.slice(0, safeLimit);
     return {
         items,
-        hasMore,
-        total: hasMore ? start + items.length + 1 : start + items.length,
+        hasMore: usable.length > safeLimit,
+        total: items.length + (usable.length > safeLimit ? 1 : 0),
     };
 };
 

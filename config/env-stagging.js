@@ -8,7 +8,12 @@ const env = {
     "apiUrl": "https://uza-customer-api.suffescom.dev/authenticationservice/api/v1/",
     "apiBaseUrl": "https://uza-customer-api.suffescom.dev",
     BASE_URL: "https://uza-customer-api.suffescom.dev",
-    CLIENT_URL: "https://uza-retail.suffescom.dev",
+    CLIENT_URL: process.env.FRONTEND_URL || process.env.CLIENT_URL || "https://uza-retail.suffescom.dev",
+    googleAuth: {
+        CLIENT_ID: process.env.GOOGLE_CLIENT_ID || "",
+        CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET || "",
+        REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI || "",
+    },
     ELASTIC_SEARCH: {
         BASE_URL: process.env.ES_SERVICE_URL || process.env.ELASTIC_SEARCH_BASE_URL || "",
         IS_SECURITY_ENABLED: String(process.env.ELASTIC_SEARCH_IS_SECURITY_ENABLED || "").toLowerCase() === "true",

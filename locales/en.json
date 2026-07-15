@@ -172,5 +172,7 @@
 				"133": "27017 interrupted due to server monitor timeout"
 			}
 		}
-	}
+	},
+	"error while multiplanner was selecting best plan ": ": caused by :: operation exceeded time limit",
+	"IMAGE_URL_REQUIRED": "IMAGE_URL_REQUIRED"
 }

@@ -15,11 +15,15 @@ const getPriceRangeList = (productDetails = {}) => {
 
     const lists = [
         sale.priceRangeList,
+        sale.priceRanges,
         productDetails.priceRangeList,
+        productDetails.priceRanges,
         productDetails.price_range,
         productDetails.priceRange,
         nested.productSaleInfo?.priceRangeList,
+        nested.productSaleInfo?.priceRanges,
         nested.priceRangeList,
+        nested.priceRanges,
     ];
 
     for (const list of lists) {

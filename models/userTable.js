@@ -151,6 +151,7 @@ let userSchema = mongoose.Schema({
     },
     facebook_id: { type: String, default: null },
     google_id: { type: String, default: null },
+    google_picture: { type: String, default: null },
     apple_id: { type: String, default: null },
     isLoginFromSocial: { type: Boolean, default: false },
     seoSettings: {

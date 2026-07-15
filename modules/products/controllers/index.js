@@ -28,7 +28,6 @@ const {
     getPersonalizedProductPage,
     getPersonalizedNewArrivalsPage,
     getHomeBrowseProductPage,
-    getRotatedProductPage,
     buildCatalogSeedKey,
     trackProductBehavior,
 } = require('../services/recommendationService');
@@ -843,30 +842,85 @@ module.exports = {
         try {
 
             const { skip, limit } = req.paginationOptions;
-            const { search, category, refresh } = req.query;
+            const { search, category } = req.query;
             let items = [];
             let total = 0;
             let hasMore;
 
+            const soldSort = [
+                { sold_count: { order: "desc", missing: "_last" } },
+                { average_rating: { order: "desc", missing: "_last" } },
+                { date_created_utc: { order: "desc" } },
+            ];
+
             if (!search && !category) {
+                // Hot Deals listing: paginate ALL high-sold products (desc), then append interacted on page 1.
                 const catalogPage = Math.max(1, Number(req.query.skip) || 1);
-                const seedKey = `${buildCatalogSeedKey(req, refresh)}:arrivals`;
-                const homeFeedFast = req.query.homeFeed === "true" || req.query.homeFeed === true;
-                const personalized = homeFeedFast
-                    ? await getRotatedProductPage({
-                        limit,
-                        page: catalogPage,
-                        seedKey,
-                    })
-                    : await getPersonalizedNewArrivalsPage(req, {
-                        limit,
-                        page: catalogPage,
-                        seedKey,
-                        refresh,
-                    });
-                items = visibleCatalogItems(personalized.items);
-                hasMore = personalized.hasMore;
-                total = personalized.total;
+                const pageOffset = Number(skip) || 0; // already (page-1)*limit from setPagination
+
+                let usedEs = false;
+                try {
+                    const { items: rawItems, total: esTotal } = unwrapEsSearchResult(
+                        await esProductService.filter({
+                            limit: limit + 1,
+                            skip: pageOffset,
+                            sort: soldSort,
+                        })
+                    );
+                    if (Array.isArray(rawItems) && rawItems.length) {
+                        const resolved = visibleCatalogItems(
+                            await resolveActiveCatalogItems(rawItems)
+                        );
+                        const ranked = [...resolved].sort(
+                            (a, b) => (Number(b?.sold_count) || 0) - (Number(a?.sold_count) || 0)
+                        );
+                        const page = trimPaginationItems(ranked, limit);
+                        items = page.items;
+                        hasMore = page.hasMore || (Number(esTotal) || 0) > pageOffset + items.length;
+                        total = Number(esTotal) || (pageOffset + items.length + (hasMore ? 1 : 0));
+                        usedEs = items.length > 0;
+                    }
+                } catch (esErr) {
+                    console.warn("[hot-deals] ES list failed, using Mongo:", esErr?.message || esErr);
+                }
+
+                if (!usedEs) {
+                    // Full sold ranking pagination (no tiny pool) so View All can scroll through all.
+                    const rows = await Product.getNewArrivalsProducts(
+                        { status: "active" },
+                        { ...req.paginationOptions, limit: limit + 1 }
+                    );
+                    const page = trimPaginationItems(
+                        visibleCatalogItems(Array.isArray(rows) ? rows : []),
+                        limit
+                    );
+                    items = page.items;
+                    hasMore = page.hasMore;
+                    total = pageOffset + items.length + (hasMore ? 1 : 0);
+                }
+
+                // Page 1 only: append top interacted after sold (deduped).
+                if (catalogPage === 1 && items.length) {
+                    try {
+                        const mix = await getPersonalizedNewArrivalsPage(req, {
+                            limit: Math.max(12, Math.ceil(limit * 0.4)),
+                            page: 1,
+                        });
+                        const seen = new Set(items.map((row) => String(row?._id || "")));
+                        const extras = visibleCatalogItems(mix.items || []).filter((row) => {
+                            const id = String(row?._id || "");
+                            return id && !seen.has(id);
+                        });
+                        if (extras.length) {
+                            const room = Math.min(extras.length, Math.ceil(limit * 0.35));
+                            items = [...items, ...extras.slice(0, room)];
+                            hasMore = true;
+                            total = Math.max(Number(total) || 0, pageOffset + items.length + 1);
+                        }
+                    } catch (mixErr) {
+                        console.warn("[hot-deals] interaction append skipped:", mixErr?.message || mixErr);
+                    }
+                }
             } else {
                 try {
                     const { items: rawItems, total: esTotal } = unwrapEsSearchResult(
@@ -875,16 +929,14 @@ module.exports = {
                             skip,
                             search,
                             category,
-                            sort: {
-                                date_created_utc: {
-                                    order: "desc"
-                                }
-                            }
+                            minSoldCount: search || category ? undefined : 1,
+                            sort: soldSort,
                         })
                     );
                     items = visibleCatalogItems(await resolveActiveCatalogItems(rawItems), {
                         search: String(search || "").trim(),
                     });
+                    items.sort((a, b) => (Number(b?.sold_count) || 0) - (Number(a?.sold_count) || 0));
                     total = esTotal;
                 } catch (error) {
                     const mongoQuery = getMongoListQuery({ category, search });
@@ -893,6 +945,7 @@ module.exports = {
                         limit
                     );
                     items = visibleCatalogItems(page.items, { search: String(search || "").trim() });
+                    items.sort((a, b) => (Number(b?.sold_count) || 0) - (Number(a?.sold_count) || 0));
                     hasMore = page.hasMore;
                     total = skip + items.length + (hasMore ? 1 : 0);
                     items = normalizeFeaturedImageLink(items);

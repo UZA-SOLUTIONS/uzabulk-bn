@@ -1,4 +1,3 @@
-const _ = require("lodash")
 const { getProductDetail } = require('../services/alibaba');
 const { extractMinOrderQty } = require('./moq');
 const { extractSupplierIds } = require('./supplier');
@@ -11,6 +10,10 @@ const { verifyFromProductDetails } = require('../services/supplierVerificationSe
 const { ensureProductEmbedding } = require('../services/similarProductsService');
 const { autoEnrichProductListing } = require('../../ai/services/autoSmartListingService');
 const { bulkInsert } = require("../../../elasticsearch/indexes/productIndex");
+const {
+    transformPriceRange,
+    resolveProductListPrice,
+} = require('./pricing');
 const STORE_TYPE_ID = "660e3c271095513081ed2223";
 
 const updateProductDetails = async (product, productDetails) => {
@@ -23,6 +26,10 @@ const updateProductDetails = async (product, productDetails) => {
 
             const { topCategoryId = "", secondCategoryId, thirdCategoryId, status, productSkuInfos, subject, subjectTrans, offerId, description, productSaleInfo, productImage, soldOut, productAttribute, mainVideo, detailVideo, productShippingInfo } = productDetails;
             const price_tiers = transformPriceRange(productSaleInfo?.priceRangeList || []);
+            const listPrice = resolveProductListPrice({
+                price_tiers,
+                productSkuInfos,
+            });
             const min_order_qty = extractMinOrderQty(productDetails);
             supplierIds = extractSupplierIds(productDetails);
 
@@ -58,7 +65,7 @@ const updateProductDetails = async (product, productDetails) => {
                 short_description: "",
                 ...(description ? { description } : {}),
                 sku: "", // Consider adding SKU logic if needed
-                price: price_tiers[0]?.price,
+                price: listPrice,
                 compare_price: 0,
                 manage_stock: Boolean(productSaleInfo.amountOnSale),
                 bestSeller: "yes",
@@ -205,19 +212,6 @@ const transformAndInsertProductSKUs = async (vendor, productSkuInfos) => {
         variations: variationIds,
         attributes: Object.values(variationAttributes)
     };
-}
-
-function transformPriceRange(priceRangeList) {
-    if (_.isEmpty(priceRangeList)) return [];
-
-    const sortedPriceRangeList = _.sortBy(priceRangeList, 'startQuantity');
-
-    return _.map(sortedPriceRangeList, range => ({
-        minQty: range.minQuantity ?? range.startQuantity,
-        maxQty: range.maxQuantity,
-        price: range.price,
-        startQuantity: range.startQuantity ?? range.minQuantity,
-    }));
 }
 
 module.exports = { updateProductDetails };

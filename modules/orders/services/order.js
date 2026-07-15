@@ -139,4 +139,26 @@ let orderById = (_id) => {
   return Order.findById(_id).lean();
 };
 
-module.exports = { addOrder, countData, list, sendOrderEmails, updateProductStocks, createMany, orderById };
+/** Public lookup by Mongo id or customOrderId (no sign-in required). */
+let findForTrack = (rawQuery, userId = null) => {
+  const q = String(rawQuery || "").trim();
+  if (!q) return null;
+
+  const filter = {};
+  if (userId) {
+    // Prefer the signed-in user's order when logged in.
+    filter.user = userId;
+  }
+
+  if (mongoose.isValidObjectId(q)) {
+    filter.$or = [{ _id: q }, { customOrderId: q }];
+  } else {
+    filter.customOrderId = {
+      $regex: new RegExp(`^${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i"),
+    };
+  }
+
+  return Order.findOne(filter).lean();
+};
+
+module.exports = { addOrder, countData, list, sendOrderEmails, updateProductStocks, createMany, orderById, findForTrack };

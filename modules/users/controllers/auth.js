@@ -234,3 +234,130 @@ exports.logout = async (req, res) => {
     res.error(error);
   }
 };
+
+const {
+  configurePassportGoogle,
+  isGoogleAuthConfigured,
+  passport,
+} = require("../services/googlePassport");
+const {
+  findOrCreateGoogleUser,
+  verifyGoogleCredential,
+} = require("../services/googleAuthService");
+
+const getFrontendBaseUrl = () =>
+  String(
+    process.env.FRONTEND_URL
+    || process.env.CLIENT_URL
+    || env.CLIENT_URL
+    || "http://localhost:3000"
+  ).replace(/\/+$/, "");
+
+const redirectGoogleResult = (res, { token, error }) => {
+  const base = getFrontendBaseUrl();
+  const params = new URLSearchParams();
+  if (token) params.set("token", token);
+  if (error) params.set("error", error);
+  return res.redirect(`${base}/auth/google/callback?${params.toString()}`);
+};
+
+/**
+ * Public config for Google One Tap / GIS (client id only — safe to expose).
+ */
+exports.googleClientConfig = async (req, res) => {
+  try {
+    const clientId = String(process.env.GOOGLE_CLIENT_ID || "").trim();
+    return res.success("RECORD_FOUND", {
+      clientId: clientId || null,
+      oneTapEnabled: Boolean(clientId),
+    });
+  } catch (error) {
+    console.error(error);
+    res.error(error);
+  }
+};
+
+/**
+ * Google One Tap / GIS credential login — no redirect, no login modal.
+ */
+exports.googleOneTap = async (req, res) => {
+  try {
+    const credential = String(req.body?.credential || "").trim();
+    if (!credential) {
+      return res.error("GOOGLE_CREDENTIAL_REQUIRED");
+    }
+
+    const profile = await verifyGoogleCredential(credential);
+    const { user, token } = await findOrCreateGoogleUser(profile);
+
+    const deviceId = String(
+      req.body?.deviceId || req.deviceId || req.headers?.deviceid || ""
+    ).trim();
+    if (deviceId && user?._id) {
+      try {
+        await UserServices.mergeCart(user._id, deviceId);
+      } catch (mergeErr) {
+        console.warn("mergeCart failed (google one-tap still succeeds):", mergeErr?.message || mergeErr);
+      }
+    }
+
+    return res.success("LOGIN_SUCCESS", { user, token });
+  } catch (error) {
+    console.error("[google-one-tap]", error);
+    const code = error?.message || "GOOGLE_AUTH_FAILED";
+    return res.error(code);
+  }
+};
+
+/**
+ * Start Google OAuth. Optional ?deviceId= for cart merge after login.
+ */
+exports.googleAuth = (req, res, next) => {
+  if (!isGoogleAuthConfigured()) {
+    return redirectGoogleResult(res, { error: "GOOGLE_AUTH_NOT_CONFIGURED" });
+  }
+  configurePassportGoogle();
+  const deviceId = String(req.query.deviceId || req.headers.deviceid || "").trim();
+  return passport.authenticate("google", {
+    scope: ["profile", "email"],
+    session: false,
+    state: deviceId || undefined,
+    prompt: "select_account",
+  })(req, res, next);
+};
+
+/**
+ * Google OAuth callback — merge/create user, issue JWT, redirect to frontend.
+ */
+exports.googleAuthCallback = (req, res, next) => {
+  if (!isGoogleAuthConfigured()) {
+    return redirectGoogleResult(res, { error: "GOOGLE_AUTH_NOT_CONFIGURED" });
+  }
+  configurePassportGoogle();
+
+  passport.authenticate("google", { session: false }, async (err, payload) => {
+    try {
+      if (err || !payload?.profile) {
+        console.error("[google-auth] callback failed:", err?.message || err || "no profile");
+        return redirectGoogleResult(res, { error: "GOOGLE_AUTH_FAILED" });
+      }
+
+      const { user, token } = await findOrCreateGoogleUser(payload.profile);
+
+      const deviceId = String(payload.deviceId || "").trim();
+      if (deviceId && user?._id) {
+        try {
+          await UserServices.mergeCart(user._id, deviceId);
+        } catch (mergeErr) {
+          console.warn("mergeCart failed (google login still succeeds):", mergeErr?.message || mergeErr);
+        }
+      }
+
+      return redirectGoogleResult(res, { token });
+    } catch (error) {
+      console.error("[google-auth]", error);
+      const code = error?.message || "GOOGLE_AUTH_FAILED";
+      return redirectGoogleResult(res, { error: code });
+    }
+  })(req, res, next);
+};

@@ -18,6 +18,7 @@ const listProjection = {
     featureAttribute: 1,
     offerId: 1,
     min_order_qty: 1,
+    sold_count: 1,
     sellerOpenId: 1,
     seller_id: 1,
     supplier_id: 1,
@@ -64,10 +65,11 @@ let getNewArrivalsProducts = (query, { limit, skip, search }) => {
     if (search) {
         query.name = { $regex: new RegExp(search, 'i') };
     };
+    // Hot Deals: most sold first (do not require sold_count > 0 — many rows omit it)
     return Product.find(query)
         .skip(skip)
         .limit(limit)
-        .sort({ _id: -1 })
+        .sort({ sold_count: -1, average_rating: -1, _id: -1 })
         .select(listProjection)
         .populate({ path: "featured_image", select: "link -_id" })
         .lean()

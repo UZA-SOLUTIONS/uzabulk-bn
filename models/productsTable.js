@@ -111,6 +111,7 @@ productSchema.index({ name: "text", status: 1, topCategoryId: 1, secondCategoryI
 
 productSchema.index({ status: 1, topCategoryId: 1, sold_count: -1 }, { name: "category_thumb_filter" });
 productSchema.index({ status: 1, categories: 1, sold_count: -1 }, { name: "category_array_thumb_filter" });
+productSchema.index({ status: 1, sold_count: -1, average_rating: -1 }, { name: "hot_deals_sold_rank" });
 productSchema.index({ categories: 1, status: 1, date_created_utc: -1 }, { name: "categories_status_date_filter" });
 productSchema.index({ status: 1, average_rating: -1 }, { name: "top_ranking_filter" });
 

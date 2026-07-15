@@ -1,6 +1,10 @@
 const client = require("../../../lib/alibaba1688Client");
 const { extractMinOrderQty } = require("../helper/moq");
 const { extractSupplierIds } = require("../helper/supplier");
+const {
+    pickRawPriceRangeList,
+    normalizePriceRangeList,
+} = require("../helper/pricing");
 
 const CROSSBORDER_NS = "com.alibaba.fenxiao.crossborder";
 const PRODUCT_NS = "com.alibaba.product";
@@ -76,7 +80,16 @@ const normalizeAlibabaProductInfo = (productInfo, productId) => {
         productSaleInfo: {
             ...productSaleInfo,
             ...(minOrderQuantity != null ? { minOrderQuantity } : {}),
-            priceRangeList: productSaleInfo.priceRangeList || productInfo.priceRangeList || [],
+            priceRangeList: normalizePriceRangeList(
+                pickRawPriceRangeList(
+                    productSaleInfo.priceRangeList,
+                    productSaleInfo.priceRanges,
+                    productInfo.priceRangeList,
+                    productInfo.priceRanges,
+                    productInfo.saleInfo?.priceRangeList,
+                    productInfo.saleInfo?.priceRanges
+                )
+            ),
             amountOnSale: productSaleInfo.amountOnSale || productInfo.amountOnSale || productInfo.stock || 0,
             unitInfo: productSaleInfo.unitInfo || productInfo.unitInfo || {},
         },

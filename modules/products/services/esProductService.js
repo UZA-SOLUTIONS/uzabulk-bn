@@ -121,8 +121,24 @@ const buildFunctionScore = (searchQuery) => {
 };
 
 const buildEsSort = ({ search, orderBy, order, sort } = {}) => {
-    if (Array.isArray(sort) && sort.length) return sort;
-    if (sort && typeof sort === "object") return [sort];
+    const stripIdFielddata = (clauses) =>
+        (Array.isArray(clauses) ? clauses : [])
+            .map((clause) => {
+                if (!clause || typeof clause !== "object") return null;
+                // ES 8+ disallows fielddata / sorting on `_id`.
+                if (Object.prototype.hasOwnProperty.call(clause, "_id")) return null;
+                return clause;
+            })
+            .filter(Boolean);
+
+    if (Array.isArray(sort) && sort.length) {
+        const cleaned = stripIdFielddata(sort);
+        return cleaned.length ? cleaned : [{ date_created_utc: { order: "desc" } }];
+    }
+    if (sort && typeof sort === "object") {
+        const cleaned = stripIdFielddata([sort]);
+        return cleaned.length ? cleaned : [{ date_created_utc: { order: "desc" } }];
+    }
 
     const q = normalizeSearchQuery(search);
     const field = String(orderBy || "").trim();
@@ -178,10 +194,14 @@ const applySingleCategoryFilter = (boolFilter, singleCategoryOnly) => {
 };
 
 module.exports = {
-    filter: async ({ limit, skip, sort, search, category, categoryIds, orderBy, order, singleCategoryOnly = false }) => {
+    filter: async ({ limit, skip, sort, search, category, categoryIds, orderBy, order, singleCategoryOnly = false, minSoldCount } = {}) => {
         const bool = {
             filter: [{ term: { status: "active" } }],
         };
+        const minSold = Number(minSoldCount);
+        if (Number.isFinite(minSold) && minSold > 0) {
+            bool.filter.push({ range: { sold_count: { gte: minSold } } });
+        }
         await applyCategoryFilter(bool.filter, { categoryId: category, categoryIds });
         applySingleCategoryFilter(bool.filter, singleCategoryOnly);
 

@@ -34,6 +34,17 @@ app.use(compression());
 // enable cors
 app.use(cors({ origin: "*" }));
 
+// Google OAuth (Passport) — configured lazily when routes hit if env keys exist
+try {
+  const { configurePassportGoogle, isGoogleAuthConfigured, passport } = require("./modules/users/services/googlePassport");
+  if (isGoogleAuthConfigured()) {
+    configurePassportGoogle();
+    app.use(passport.initialize());
+  }
+} catch (googlePassportErr) {
+  console.warn("[google-auth] Passport init skipped:", googlePassportErr.message);
+}
+
 // Uploaded product images must be embeddable on the storefront (different port/origin in dev).
 app.use("/images", (req, res, next) => {
   res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
