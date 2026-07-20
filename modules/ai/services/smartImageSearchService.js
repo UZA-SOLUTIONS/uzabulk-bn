@@ -95,8 +95,20 @@ const mergeItems = (target = [], incoming = [], { scoreBoost = 0 } = {}) => {
                 && (!existing.similarity_score || item.similarity_score > existing.similarity_score)) {
                 existing.similarity_score = item.similarity_score;
             }
-            if (item.match_type === "visual" || existing.match_type === "visual") {
+            const minSim = Math.min(
+                Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_MIN_SIMILARITY || 0.38), 0),
+                1
+            );
+            const incomingStrongVisual =
+                item.match_type === "visual"
+                && Number(item.similarity_score || 0) >= minSim;
+            const existingStrongVisual =
+                existing.match_type === "visual"
+                && Number(existing.similarity_score || 0) >= minSim;
+            if (incomingStrongVisual || existingStrongVisual) {
                 existing.match_type = "visual";
+            } else if (item.match_type === "weak_visual" && existing.match_type !== "visual") {
+                existing.match_type = "weak_visual";
             }
             existing.match_score = Number(Math.max(existingScore, incomingScore).toFixed(4));
             return;
@@ -379,7 +391,11 @@ const resolveSmartImageSearch = async ({
                     { limit: pageLimit }
                 );
                 if (embedded.length) {
-                    const filteredEmbed = filterSupplementalItems(embedded, relevanceContext);
+                    const taggedEmbed = embedded.map((item) => ({
+                        ...item,
+                        match_type: item.match_type || "embedding",
+                    }));
+                    const filteredEmbed = filterSupplementalItems(taggedEmbed, relevanceContext);
                     mergeItems(items, filteredEmbed, { scoreBoost: visualCount ? 1 : 7 });
                     provider = `${provider}+embedding`;
                 }
@@ -568,7 +584,13 @@ const searchSimilarByEmbedding = async (searchPhrase, { limit = 24, excludeIds =
             item,
             score: cosineSimilarity(queryVector, item.embedding),
         }))
-        .filter((row) => row.score > 0.18 && !exclude.has(String(row.item._id)))
+        .filter((row) => {
+            const minScore = Math.min(
+                Math.max(Number(process.env.IMAGE_SEARCH_EMBEDDING_MIN_SCORE || 0.32), 0.05),
+                0.95
+            );
+            return row.score >= minScore && !exclude.has(String(row.item._id));
+        })
         .sort((a, b) => b.score - a.score)
         .slice(0, cap)
         .map((row) => ({

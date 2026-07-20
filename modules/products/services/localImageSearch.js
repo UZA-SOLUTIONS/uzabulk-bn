@@ -2,6 +2,7 @@ const { execFile } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const env = require("../../../config/env");
 const { guessLocalImagePath } = require("../../ai/helpers/resolveVisionImageInput");
 
 const LOCAL_IMAGE_SEARCH_ENABLED_DEFAULT =
@@ -32,6 +33,11 @@ const LOCAL_IMAGE_SEARCH_MIN_SIMILARITY = Math.min(
     Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_MIN_SIMILARITY || 0.38), 0),
     1
 );
+
+/** When true, keep top-3 below-threshold matches if none pass the floor (legacy). Default off. */
+const isWeakVisualFloorEnabled = () =>
+    String(process.env.IMAGE_SEARCH_WEAK_VISUAL_FLOOR ?? "false").toLowerCase() === "true"
+    || String(process.env.IMAGE_SEARCH_WEAK_VISUAL_FLOOR ?? "").toLowerCase() === "1";
 
 const isLocalImageSearchEnabled = () => {
     const flag = String(process.env.LOCAL_IMAGE_SEARCH_ENABLED ?? "true").toLowerCase();
@@ -85,7 +91,9 @@ const dedupeByOfferMaxSimilarity = (results = []) => {
 const filterByMinSimilarity = (results = []) => {
     const min = LOCAL_IMAGE_SEARCH_MIN_SIMILARITY;
     const filtered = (results || []).filter((row) => Number(row?.similarity || 0) >= min);
-    return filtered.length ? filtered : (results || []).slice(0, 3);
+    if (filtered.length) return filtered;
+    if (isWeakVisualFloorEnabled()) return (results || []).slice(0, 3);
+    return [];
 };
 
 const searchLocalImage = async ({ imageAddress, limit = 32 }) => {

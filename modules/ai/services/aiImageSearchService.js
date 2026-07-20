@@ -255,9 +255,15 @@ const searchCatalogByEmbeddingPhrase = async (phrase, { limit = 32 } = {}) => {
     const cap = Math.max(1, Math.min(Number(limit) || 32, 48));
     const queryVector = await getEmbedding(text.slice(0, 2000));
 
+    // Higher floor for image-search embedding fill (text search keeps its own thresholds).
+    const minScore = Math.min(
+        Math.max(Number(process.env.IMAGE_SEARCH_EMBEDDING_MIN_SCORE || 0.32), 0.05),
+        0.95
+    );
+
     return searchProductsByVector(queryVector, {}, {
         limit: cap,
-        minScore: 0.15,
+        minScore,
         candidateLimit: 120,
     });
 };

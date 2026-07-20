@@ -75,10 +75,11 @@ let updateLatestPricing = async (cart) => {
 }
 
 let cartList = async (query) => {
-    return Cart.find(query)
+    const { attachProductMoqFields } = require("../../products/helper/moq");
+    const rows = await Cart.find(query)
         .populate({
             path: "product",
-            select: "name attributes price",
+            select: "name attributes price minQuantity min_order_qty moq minimumOrderQuantity minOrderQuantity price_tiers",
             populate: [
                 {
                     path: "featured_image",
@@ -92,6 +93,16 @@ let cartList = async (query) => {
             ]
         })
         .lean();
+
+    return (rows || []).map((row) => {
+        if (!row?.product) return row;
+        const product = attachProductMoqFields({ ...row.product });
+        // Populate returns { link }; storefront img tags expect a string URL.
+        if (product.featured_image && typeof product.featured_image === "object") {
+            product.featured_image = product.featured_image.link || "";
+        }
+        return { ...row, product };
+    });
 }
 
 let findOne = async (query) => {

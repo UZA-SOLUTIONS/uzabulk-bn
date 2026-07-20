@@ -231,6 +231,10 @@ const mapProductsByOfferOrder = async (offerIds = []) => {
 
 
 const VISUAL_MATCH_SCORE_BASE = Number(process.env.LOCAL_IMAGE_SEARCH_SCORE_BASE || 8);
+const VISUAL_MATCH_MIN_SIMILARITY = Math.min(
+    Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_MIN_SIMILARITY || 0.38), 0),
+    1
+);
 
 const attachVisualMatchScores = (items = [], visualResults = []) => {
     const scoreByOffer = new Map(
@@ -244,11 +248,13 @@ const attachVisualMatchScores = (items = [], visualResults = []) => {
         const offerId = String(item?.offerId || "").trim();
         const similarity = scoreByOffer.get(offerId) || 0;
         if (!similarity) return item;
+        const isStrong = similarity >= VISUAL_MATCH_MIN_SIMILARITY;
         return {
             ...item,
             similarity_score: Number(similarity.toFixed(4)),
             match_score: Number((VISUAL_MATCH_SCORE_BASE + similarity * 10).toFixed(4)),
-            match_type: "visual",
+            // Below-threshold hits are not treated as primary visual matches.
+            match_type: isStrong ? "visual" : "weak_visual",
         };
     });
 };
