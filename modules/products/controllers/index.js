@@ -900,7 +900,11 @@ module.exports = {
                 }
 
                 // Page 1 only: append top interacted after sold (deduped).
-                if (catalogPage === 1 && items.length) {
+                // Home strip (?homeFeed=true) skips this — personalization was adding ~8–17s.
+                const isHomeFeed =
+                    String(req.query.homeFeed || "").toLowerCase() === "true"
+                    || String(req.query.homeFeed || "") === "1";
+                if (catalogPage === 1 && items.length && !isHomeFeed) {
                     try {
                         const mix = await getPersonalizedNewArrivalsPage(req, {
                             limit: Math.max(12, Math.ceil(limit * 0.4)),

@@ -74,6 +74,8 @@ module.exports = {
                 coupon: Joi.string().optional().min(3).allow(""),
                 shipping_address: IdRequired,
                 billing_address: IdRequired,
+                paymentMethod: Joi.string().optional().allow(""),
+                slipLink: Joi.string().min(5).max(2000).optional().allow("", null),
             });
 
             await validateSchema(body, mainSchema);

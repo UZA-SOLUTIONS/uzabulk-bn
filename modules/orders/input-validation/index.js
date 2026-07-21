@@ -175,8 +175,15 @@ let generateLineItemsForCheckOut = async (exchangeRateOpt, data, carts, addressI
 
         const { tax, taxAmount } = Pricing.taxCalculation(env.taxSettings, 0, itemsSubTotal);
 
-        // Calculate shipping cost form alibaba;
-        let deliveryFee = data?.shippingDetails ? await calculateShippingCost(element.product.offerId, items, exchangeRate) : 0;
+        // Delivery fees are disabled storefront-wide — do not call 1688 freight.estimate
+        // (60s timeout + retries was dominating checkout latency for a value we zero out).
+        const skipFreight =
+            data?.skipFreightEstimate === true
+            || String(process.env.CHECKOUT_SKIP_FREIGHT_ESTIMATE ?? "true").toLowerCase() !== "false";
+        let deliveryFee = 0;
+        if (!skipFreight && data?.shippingDetails && element.product?.offerId) {
+            deliveryFee = await calculateShippingCost(element.product.offerId, items, exchangeRate);
+        }
 
         const discountTotal = 0;
 

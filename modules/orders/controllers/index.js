@@ -57,16 +57,29 @@ module.exports = {
             throw deliveryFeeCalculation.message;
         };
 
-        data.deliveryFee = deliveryFeeCalculation?.deliveryFee;
+        data.deliveryFee = Number(deliveryFeeCalculation?.deliveryFee) || 0;
         data.shippingDetails = deliveryFeeCalculation?.shippingDetails;
         data.billingDetails = deliveryFeeCalculation?.billingDetails;
 
         await Cart.updateLatestPricing(cartList);
+        // Skip Alibaba freight while storefront delivery fees stay at 0.
+        data.skipFreightEstimate = true;
         let line_items = await validation.generateLineItemsForCheckOut(req.exchangeRate, data, cartList, deliveryFeeCalculation, isOrder);
         data.totalItems = line_items.totalItems;
-        data.subTotal = line_items.subTotal;
-        data.line_items = line_items.line_items;
-        data.orderTotal = line_items.subTotal;
+        data.subTotal = Number(line_items.subTotal) || 0;
+        data.line_items = (line_items.line_items || []).map((line) => {
+            const discountTotal = Number(line.discountTotal) || 0;
+            const tax = Number(line.tax) || 0;
+            const subTotal = Number(line.subTotal) || 0;
+            return {
+                ...line,
+                deliveryFee: 0,
+                finalAmount: helper.toFixedNumber((subTotal + tax) - discountTotal),
+            };
+        });
+        // Delivery fees disabled for storefront checkout/orders.
+        data.deliveryFee = 0;
+        data.orderTotal = data.subTotal;
         data.discountTotal = 0;
 
 
@@ -115,9 +128,15 @@ module.exports = {
 
         //calculate tax
         const getTax = Pricing.taxCalculation(env.taxSettings, 0, data.subTotal);
-        data.tax = getTax.tax;
+        data.tax = Number(getTax.tax) || 0;
         data.taxAmount = getTax.taxAmount;
-        data.orderTotal = helper.toFixedNumber((data.subTotal + data.deliveryFee + data.tax) - data.discountTotal);
+        data.discountTotal = Number(data.discountTotal) || 0;
+        data.orderTotal = helper.toFixedNumber(
+            (data.subTotal + data.tax) - data.discountTotal
+        );
+        if (!Number.isFinite(Number(data.orderTotal))) {
+            data.orderTotal = data.subTotal;
+        }
 
         return data;
     },
@@ -204,12 +223,20 @@ module.exports = {
                             if (item?.product) cartProductIds.push(String(item.product));
                         });
                     });
-                    const crossSell = await getPersonalizedSurface("cross_sell", req, {
-                        cartProductIds,
-                        contextKey: cartProductIds.slice(0, 5).join(":") || "empty",
-                        limit: 4,
-                    });
-                    if (crossSell.items?.length) {
+                    // Cap wait so cart/checkout totals are not blocked by recs.
+                    const crossSellBudgetMs = Math.max(
+                        200,
+                        Number(process.env.CHECKOUT_CROSS_SELL_TIMEOUT_MS || 800) || 800
+                    );
+                    const crossSell = await Promise.race([
+                        getPersonalizedSurface("cross_sell", req, {
+                            cartProductIds,
+                            contextKey: cartProductIds.slice(0, 5).join(":") || "empty",
+                            limit: 4,
+                        }),
+                        new Promise((resolve) => setTimeout(() => resolve(null), crossSellBudgetMs)),
+                    ]);
+                    if (crossSell?.items?.length) {
                         checkout.cross_sell = crossSell.items;
                     }
                 } catch (crossSellError) {
@@ -228,7 +255,8 @@ module.exports = {
     createOrder: async (req, res) => {
         try {
             const user = req.user;
-            const { paymentMethod = "cod", cart_ids } = req.body;
+            const { paymentMethod = "cod", cart_ids, slipLink = "" } = req.body;
+            const receiptLink = String(slipLink || "").trim();
 
             const checkout = await module.exports.checkoutCalculationMiddleware(req, true);
             const orderGroupId = uuidv4();
@@ -244,9 +272,9 @@ module.exports = {
                     line_items: cartItem.items,
                     offerId: cartItem.offerId ? String(cartItem.offerId) : "",
                     subTotal: cartItem.subTotal,
-                    orderTotal: helper.toFixedNumber((cartItem.subTotal + cartItem.deliveryFee + cartItem.tax) - cartItem.discountTotal),
+                    orderTotal: helper.toFixedNumber((cartItem.subTotal + cartItem.tax) - cartItem.discountTotal),
                     discountTotal: cartItem.discountTotal,
-                    deliveryFee: cartItem.deliveryFee,
+                    deliveryFee: 0,
                     shippingDetails: checkout.shippingDetails,
                     billingDetails: checkout.billingDetails,
                     tax: cartItem.tax,
@@ -260,6 +288,12 @@ module.exports = {
                     couponAmount: checkout.couponAmount,
                     currency: req.exchangeRate,
                     orderGroupId: orderGroupId,
+                    ...(receiptLink
+                        ? {
+                            slipLink: receiptLink,
+                            slipUploadStatus: "uploaded",
+                        }
+                        : {}),
 
                     date_created: date,
                     date_created_utc: utcDate,
