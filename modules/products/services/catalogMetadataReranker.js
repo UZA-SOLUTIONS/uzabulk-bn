@@ -187,8 +187,8 @@ const rerankImageSearchItems = async (items = [], vision = null) => {
             Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_MIN_SIMILARITY || 0.38), 0),
             1
         );
-        const visualA = simA >= minSim || (a.match_type === "visual" && simA > 0);
-        const visualB = simB >= minSim || (b.match_type === "visual" && simB > 0);
+        const visualA = simA >= minSim && a.match_type !== "weak_visual";
+        const visualB = simB >= minSim && b.match_type !== "weak_visual";
         if (visualA && visualB) return simB - simA;
         if (visualA) return -1;
         if (visualB) return 1;

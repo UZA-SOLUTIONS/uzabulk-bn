@@ -79,13 +79,27 @@ const pickGoogleProfile = (profile = {}) => {
     || ""
   ).trim();
 
+  // Persist a high-res Google photo URL (default GIS thumbnails are ~96px).
+  let hdPicture = picture;
+  if (hdPicture && /googleusercontent\.com/i.test(hdPicture)) {
+    if (/=s\d+-c\b/i.test(hdPicture)) {
+      hdPicture = hdPicture.replace(/=s\d+-c\b/i, "=s512-c");
+    } else if (/=s\d+\b/i.test(hdPicture)) {
+      hdPicture = hdPicture.replace(/=s\d+\b/i, "=s512");
+    } else if (/[?&]sz=\d+/i.test(hdPicture)) {
+      hdPicture = hdPicture.replace(/([?&]sz=)\d+/i, "$1512");
+    } else {
+      hdPicture += (hdPicture.includes("?") ? "&" : "?") + "sz=512";
+    }
+  }
+
   return {
     googleId: String(profile.id || "").trim(),
     email,
     firstName,
     lastName,
     name: displayName || email.split("@")[0] || "Google User",
-    picture,
+    picture: hdPicture,
   };
 };
 

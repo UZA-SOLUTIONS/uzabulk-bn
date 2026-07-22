@@ -21,7 +21,8 @@ const minRelevanceScore = () =>
     Math.max(Number(process.env.IMAGE_SEARCH_MIN_RELEVANCE_SCORE || 14), 0);
 
 const maxNonVisualSupplementCount = (pageLimit = 24) => Math.min(
-    Math.max(Number(process.env.IMAGE_SEARCH_MAX_SUPPLEMENT_ITEMS || 8), 0),
+    // Stricter default when visual seeds exist — reduces junk fillers after a good match.
+    Math.max(Number(process.env.IMAGE_SEARCH_MAX_SUPPLEMENT_ITEMS || 4), 0),
     pageLimit
 );
 
@@ -217,8 +218,13 @@ const minVisualSimilarity = () => Math.min(
 );
 
 const isVisualMatchItem = (item) => {
+    if (!item || typeof item !== "object") return false;
+    if (item.match_type === "weak_visual" || item.match_type === "fallback") return false;
     const similarity = Number(item?.similarity_score || 0);
-    return similarity >= minVisualSimilarity() || (item?.match_type === "visual" && similarity > 0);
+    // Only strong visual matches; do not promote below-threshold scores via match_type alone.
+    return similarity >= minVisualSimilarity() && (
+        item.match_type === "visual" || item.match_type == null || similarity > 0
+    );
 };
 
 const trimCatalogLabel = (name = "", maxWords = 6) => {

@@ -68,9 +68,14 @@ let deliveryFeeCalculation = async (data) => {
 
 
     if (!data.shipping_address) {
-        message = 'ADDRESS_ID_IS_REQUIRED';
-        error = true;
-    };
+        return {
+            message: "ADDRESS_ID_IS_REQUIRED",
+            error: true,
+            deliveryFee: 0,
+            billingDetails: null,
+            shippingDetails: null,
+        };
+    }
 
     const getAddress = await Address.getAddressByIdAsync(data.shipping_address);
 
@@ -83,13 +88,13 @@ let deliveryFeeCalculation = async (data) => {
     let billingDetails = getAddress;
 
     if (data.billing_address) {
-        const getAddress = await Address.getAddressByIdAsync(data.billing_address);
+        const billingAddress = await Address.getAddressByIdAsync(data.billing_address);
 
-        if (getAddress == null) {
+        if (billingAddress == null) {
             message = "ADDRESS_IS_INVALID";
             error = true;
         };
-        billingDetails = getAddress;
+        billingDetails = billingAddress;
     }
 
 
