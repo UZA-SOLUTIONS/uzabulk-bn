@@ -62,23 +62,14 @@ module.exports = {
         data.billingDetails = deliveryFeeCalculation?.billingDetails;
 
         await Cart.updateLatestPricing(cartList);
-        // Skip Alibaba freight while storefront delivery fees stay at 0.
-        data.skipFreightEstimate = true;
+        // Tax + delivery from 1688 product.freight.estimate (per cart offerId).
+        data.skipFreightEstimate = String(process.env.CHECKOUT_SKIP_FREIGHT_ESTIMATE ?? "false").toLowerCase() === "true";
         let line_items = await validation.generateLineItemsForCheckOut(req.exchangeRate, data, cartList, deliveryFeeCalculation, isOrder);
         data.totalItems = line_items.totalItems;
         data.subTotal = Number(line_items.subTotal) || 0;
-        data.line_items = (line_items.line_items || []).map((line) => {
-            const discountTotal = Number(line.discountTotal) || 0;
-            const tax = Number(line.tax) || 0;
-            const subTotal = Number(line.subTotal) || 0;
-            return {
-                ...line,
-                deliveryFee: 0,
-                finalAmount: helper.toFixedNumber((subTotal + tax) - discountTotal),
-            };
-        });
-        // Delivery fees disabled for storefront checkout/orders.
-        data.deliveryFee = 0;
+        data.line_items = line_items.line_items || [];
+        data.deliveryFee = Number(data.deliveryFee) || 0;
+        data.tax = Number(data.tax) || 0;
         data.orderTotal = data.subTotal;
         data.discountTotal = 0;
 
@@ -126,17 +117,36 @@ module.exports = {
             }
         };
 
-        //calculate tax
-        const getTax = Pricing.taxCalculation(env.taxSettings, 0, data.subTotal);
-        data.tax = Number(getTax.tax) || 0;
-        data.taxAmount = getTax.taxAmount;
+        // Tax + delivery already computed per line from 1688 (or env tax fallback).
+        // Re-sum after coupon may have updated line discountTotals; keep money amounts.
+        data.tax = helper.toFixedNumber(
+            (data.line_items || []).reduce((sum, line) => sum + (Number(line.tax) || 0), 0)
+        );
+        data.deliveryFee = helper.toFixedNumber(
+            (data.line_items || []).reduce((sum, line) => sum + (Number(line.deliveryFee) || 0), 0)
+        );
+        data.taxAmount = data.subTotal > 0
+            ? helper.roundNumber((data.tax * 100) / data.subTotal)
+            : 0;
         data.discountTotal = Number(data.discountTotal) || 0;
         data.orderTotal = helper.toFixedNumber(
-            (data.subTotal + data.tax) - data.discountTotal
+            (data.subTotal + data.tax + data.deliveryFee) - data.discountTotal
         );
         if (!Number.isFinite(Number(data.orderTotal))) {
             data.orderTotal = data.subTotal;
         }
+
+        // Keep each line finalAmount in sync with discount + delivery + tax.
+        data.line_items = (data.line_items || []).map((line) => {
+            const discountTotal = Number(line.discountTotal) || 0;
+            const tax = Number(line.tax) || 0;
+            const deliveryFee = Number(line.deliveryFee) || 0;
+            const subTotal = Number(line.subTotal) || 0;
+            return {
+                ...line,
+                finalAmount: helper.toFixedNumber((subTotal + deliveryFee + tax) - discountTotal),
+            };
+        });
 
         return data;
     },
@@ -272,9 +282,12 @@ module.exports = {
                     line_items: cartItem.items,
                     offerId: cartItem.offerId ? String(cartItem.offerId) : "",
                     subTotal: cartItem.subTotal,
-                    orderTotal: helper.toFixedNumber((cartItem.subTotal + cartItem.tax) - cartItem.discountTotal),
+                    orderTotal: helper.toFixedNumber(
+                        (cartItem.subTotal + cartItem.tax + (Number(cartItem.deliveryFee) || 0))
+                        - cartItem.discountTotal
+                    ),
                     discountTotal: cartItem.discountTotal,
-                    deliveryFee: 0,
+                    deliveryFee: Number(cartItem.deliveryFee) || 0,
                     shippingDetails: checkout.shippingDetails,
                     billingDetails: checkout.billingDetails,
                     tax: cartItem.tax,

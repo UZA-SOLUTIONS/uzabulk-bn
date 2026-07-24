@@ -46,7 +46,7 @@ const buildVisionTokenSet = (vision = {}) => {
     return tokens;
 };
 
-const scoreMetadataOverlap = (item = {}, visionTokens = new Set(), primaryKeyword = "") => {
+const scoreMetadataOverlap = (item = {}, visionTokens = new Set(), primaryKeyword = "", vision = null) => {
     const fields = [
         item.name,
         item.short_description,
@@ -80,8 +80,26 @@ const scoreMetadataOverlap = (item = {}, visionTokens = new Set(), primaryKeywor
         if (token.length >= 4 && name.includes(token)) score += 4;
     });
 
-    if (item.match_type === "visual" && overlap >= 2) score += 12;
-    if (Number(item.similarity_score || 0) >= 0.55) score += 8;
+    if (item.match_type === "visual" && overlap >= 2) score += 16;
+    if (Number(item.similarity_score || 0) >= 0.58) score += 12;
+    else if (Number(item.similarity_score || 0) >= 0.48) score += 6;
+
+    // Boost / penalize based on product-type token presence in the title.
+    const typeTokens = tokenize(
+        [
+            vision?.attributes?.product_type,
+            vision?.objectLabel,
+            primaryKeyword,
+        ].filter(Boolean).join(" ")
+    );
+    let typeHits = 0;
+    typeTokens.forEach((token) => {
+        if (token.length < 3) return;
+        if (name.includes(token) || itemTokens.includes(token)) typeHits += 1;
+    });
+    if (typeHits >= 2) score += 18;
+    else if (typeHits === 1) score += 8;
+    else if (typeTokens.length >= 2) score -= 12;
 
     return Number(score.toFixed(4));
 };
@@ -163,7 +181,7 @@ const rerankImageSearchItems = async (items = [], vision = null) => {
     }
 
     const reranked = working.map((item) => {
-        const metadataScore = scoreMetadataOverlap(item, visionTokens, primaryKeyword);
+        const metadataScore = scoreMetadataOverlap(item, visionTokens, primaryKeyword, vision || null);
         let semanticScore = 0;
         if (queryVector && Array.isArray(item.embedding) && item.embedding.length) {
             semanticScore = cosineSimilarity(queryVector, item.embedding) * 35;
@@ -184,7 +202,7 @@ const rerankImageSearchItems = async (items = [], vision = null) => {
         const simA = Number(a.similarity_score || 0);
         const simB = Number(b.similarity_score || 0);
         const minSim = Math.min(
-            Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_MIN_SIMILARITY || 0.38), 0),
+            Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_MIN_SIMILARITY || 0.48), 0),
             1
         );
         const visualA = simA >= minSim && a.match_type !== "weak_visual";

@@ -6,12 +6,12 @@ const CACHE_TTL_MS = Math.min(
     900000
 );
 const LIVE_TOKEN_LIMIT = Math.min(
-    Math.max(Number(process.env.CATALOG_VOCAB_LIVE_MAX_TOKENS || 3), 1),
-    5
+    Math.max(Number(process.env.CATALOG_VOCAB_LIVE_MAX_TOKENS || 2), 1),
+    4
 );
 const LIVE_HITS_PER_TOKEN = Math.min(
-    Math.max(Number(process.env.CATALOG_VOCAB_LIVE_HITS || 8), 4),
-    15
+    Math.max(Number(process.env.CATALOG_VOCAB_LIVE_HITS || 6), 3),
+    12
 );
 
 const tokenCache = new Map();
@@ -27,13 +27,25 @@ const STOP_WORDS = new Set([
     "wholesale", "bulk", "new", "hot",
 ]);
 
-const extractNamePhrases = (name = "") => {
+const WEAK_TOKENS = new Set([
+    "pink", "beige", "green", "olive", "black", "white", "blue", "red", "gray", "grey",
+    "cotton", "silicone", "metal", "plastic", "leather", "solid", "basic", "modern",
+    "standard", "smooth", "soft", "color", "colour", "style",
+]);
+
+const extractNamePhrases = (name = "", identityTokens = new Set()) => {
     const words = tokenize(name).filter((word) => !STOP_WORDS.has(word));
     const phrases = new Set();
     if (words.length >= 2) phrases.add(words.slice(0, 2).join(" "));
     if (words.length >= 3) phrases.add(words.slice(0, 3).join(" "));
     if (words.length >= 4) phrases.add(words.slice(0, 4).join(" "));
-    return [...phrases];
+
+    // Keep only phrases that still mention the scanned product identity.
+    if (!identityTokens.size) return [...phrases];
+    return [...phrases].filter((phrase) => {
+        const phraseWords = phrase.split(" ");
+        return phraseWords.some((word) => identityTokens.has(word));
+    });
 };
 
 const getCachedNames = (token) => {
@@ -72,8 +84,8 @@ const fetchCatalogNamesForToken = async (token) => {
 };
 
 /**
- * Query-time needle expansion — learns phrasing from ES hits (scales to millions of SKUs).
- * No full-catalog scan; ~3 small ES queries per image search.
+ * Query-time needle expansion — learns phrasing from ES hits.
+ * Only expands using strong identity tokens (not colors/materials alone).
  */
 const expandNeedlesFromLiveCatalog = async ({
     needles = [],
@@ -81,11 +93,21 @@ const expandNeedlesFromLiveCatalog = async ({
     searchPhrase = "",
     objectLabel = "",
     keywords = [],
-    maxExtra = 6,
+    productType = "",
+    maxExtra = 3,
 } = {}) => {
     if (!(await getElasticsearchAvailability())) {
         return needles;
     }
+
+    const identityTokens = new Set(
+        [
+            ...tokenize(productType),
+            ...tokenize(primaryKeyword),
+            ...tokenize(objectLabel),
+            ...tokenize(searchPhrase),
+        ].filter((token) => !STOP_WORDS.has(token) && !WEAK_TOKENS.has(token))
+    );
 
     const seen = new Set(
         (needles || []).map((needle) => normalizeTerm(needle)).filter(Boolean)
@@ -95,16 +117,20 @@ const expandNeedlesFromLiveCatalog = async ({
     const add = (value) => {
         const distilled = normalizeTerm(value);
         if (!distilled || distilled.length < 3 || seen.has(distilled)) return;
+        // Must keep identity overlap — prevents "olive" → "olive fruit powder".
+        if (identityTokens.size) {
+            const words = distilled.split(" ");
+            if (!words.some((word) => identityTokens.has(word))) return;
+        }
         seen.add(distilled);
         extra.push(distilled);
     };
 
-    const visionTokens = [...new Set([
-        ...tokenize(primaryKeyword),
-        ...tokenize(searchPhrase),
-        ...tokenize(objectLabel),
-        ...(Array.isArray(keywords) ? keywords : []).flatMap(tokenize),
-    ].filter((token) => !STOP_WORDS.has(token)))].slice(0, LIVE_TOKEN_LIMIT);
+    // Prefer concrete identity tokens over colors/materials.
+    const visionTokens = [...identityTokens].slice(0, LIVE_TOKEN_LIMIT);
+    if (!visionTokens.length) {
+        return needles;
+    }
 
     for (const token of visionTokens) {
         if (extra.length >= maxExtra) break;
@@ -112,7 +138,7 @@ const expandNeedlesFromLiveCatalog = async ({
             const names = await fetchCatalogNamesForToken(token);
             names.forEach((name) => {
                 if (extra.length >= maxExtra) return;
-                extractNamePhrases(name).forEach(add);
+                extractNamePhrases(name, identityTokens).forEach(add);
             });
         } catch (error) {
             console.warn(`[catalog-vocab-live] token="${token}" failed:`, error?.message || error);

@@ -106,6 +106,15 @@ exports.login = async function (data) {
 
   await user.populate("profileImage");
 
+  // Keep previously saved Google avatar available for form (email/password) sessions.
+  // Re-read the field explicitly in case of stale documents.
+  if (!user.google_picture && user.google_id) {
+    const fresh = await UserModel.findById(user._id).select("google_picture google_id").lean();
+    if (fresh?.google_picture) {
+      user.google_picture = fresh.google_picture;
+    }
+  }
+
   const token = utils.generateToken(user);
   await user.save();
 

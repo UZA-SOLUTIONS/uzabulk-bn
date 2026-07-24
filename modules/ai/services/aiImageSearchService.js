@@ -42,8 +42,8 @@ const toStringList = (value) => {
 
 const FEATURE_SCAN_PROMPT = [
     "You are a product image feature scanner for B2B wholesale catalog matching.",
-    "Scan the ENTIRE image carefully. Identify the main product AND every visible feature that would help find the same or highly similar products.",
-    "Do not invent features you cannot see. Be specific and concrete (wholesale listing language).",
+    "Scan the ENTIRE image carefully. Identify the ONE main sellable product with high precision.",
+    "Accuracy first: name the exact product type a buyer would search for. Do not invent features you cannot see.",
     "Return JSON only (no markdown):",
     "{",
     '  "object_label": string,',
@@ -69,17 +69,18 @@ const FEATURE_SCAN_PROMPT = [
     '  "condition": string',
     "}",
     "Rules:",
-    "- object_label = clear English name of the main product (e.g. 'black leather ankle boots').",
-    "- primaryKeyword = best short wholesale search term (2-5 words).",
-    "- keywords = up to 16 search terms built from visible features: type, colors, materials, style, pattern, use-case, brand, distinctive details.",
-    "- search_phrase = one natural language phrase packing the most important visible features for semantic product matching.",
+    "- product_type = the precise product class (e.g. 'propane gas cylinder', 'wireless earbuds', 'leather ankle boots'). Never vague words like 'product', 'item', 'goods'.",
+    "- object_label = clear English name of the main product including type + key visible traits.",
+    "- primaryKeyword = best short wholesale search term (2-5 words) centered on product_type.",
+    "- keywords = up to 12 search terms; put product_type and object_label first, then colors/materials/style/use-case/brand/distinctive details.",
+    "- search_phrase = one natural phrase packing product_type + the most important visible features for semantic matching.",
+    "- If multiple objects appear, focus only on the dominant product for sale (ignore background clutter).",
     "- colors / materials = every clearly visible color and material (arrays).",
     "- shape / pattern / style / finish / size_hint = only what is visible.",
-    "- parts_and_components = visible parts (zippers, straps, buttons, screens, lenses, handles, etc.).",
-    "- distinctive_features = unique visual details that distinguish this item from similar products.",
+    "- parts_and_components = visible parts (zippers, straps, valves, handles, screens, lenses, etc.).",
+    "- distinctive_features = unique visual details that distinguish this item from lookalikes.",
     "- visible_text = any readable text/logo/label on the product or packaging.",
-    "- accessories_included / packaging = only if clearly present in the image.",
-    "- Prefer feature-rich, matchable terms over vague words like 'product' or 'item'.",
+    "- Prefer matchable wholesale terms over marketing fluff.",
 ].join("\n");
 
 /**
@@ -104,7 +105,7 @@ const extractImageSearchKeywords = async (imageAddress) => {
                 },
             ],
         }],
-        temperature: 0.15,
+        temperature: 0.05,
     });
 
     const parsed = parseJsonFromLlm(response.choices?.[0]?.message?.content || "");
@@ -116,48 +117,52 @@ const extractImageSearchKeywords = async (imageAddress) => {
 
     const keywords = [];
     const seen = new Set();
+    const productType = String(parsed?.product_type || "").trim();
+    // Identity first in keyword list — common sense: what IS this product?
+    appendKeyword(keywords, seen, productType);
     appendKeyword(keywords, seen, parsed?.object_label);
     appendKeyword(keywords, seen, parsed?.primaryKeyword);
     appendKeyword(keywords, seen, parsed?.search_phrase);
-    appendKeyword(keywords, seen, parsed?.product_type);
     appendKeyword(keywords, seen, parsed?.category);
+    appendKeyword(keywords, seen, parsed?.brand_or_logo);
+    appendKeyword(keywords, seen, parsed?.use_case);
+    appendKeyword(keywords, seen, parsed?.visible_text);
+    colors.forEach((k) => appendKeyword(keywords, seen, k));
+    materials.forEach((k) => appendKeyword(keywords, seen, k));
     appendKeyword(keywords, seen, parsed?.shape);
     appendKeyword(keywords, seen, parsed?.pattern);
     appendKeyword(keywords, seen, parsed?.style);
-    appendKeyword(keywords, seen, parsed?.brand_or_logo);
     appendKeyword(keywords, seen, parsed?.finish);
     appendKeyword(keywords, seen, parsed?.size_hint);
-    appendKeyword(keywords, seen, parsed?.use_case);
-    appendKeyword(keywords, seen, parsed?.visible_text);
     appendKeyword(keywords, seen, parsed?.packaging);
-    colors.forEach((k) => appendKeyword(keywords, seen, k));
-    materials.forEach((k) => appendKeyword(keywords, seen, k));
-    parts.forEach((k) => appendKeyword(keywords, seen, k));
     distinctive.forEach((k) => appendKeyword(keywords, seen, k));
+    parts.forEach((k) => appendKeyword(keywords, seen, k));
     accessories.forEach((k) => appendKeyword(keywords, seen, k));
     (Array.isArray(parsed?.keywords) ? parsed.keywords : []).forEach((k) => appendKeyword(keywords, seen, k));
 
     // Compound feature needles: "red leather", "wireless earbuds", etc.
     const color = colors[0] || "";
     const material = materials[0] || "";
-    const productType = String(parsed?.product_type || "").trim();
     if (color && productType) appendKeyword(keywords, seen, `${color} ${productType}`);
     if (material && productType) appendKeyword(keywords, seen, `${material} ${productType}`);
-    if (color && material) appendKeyword(keywords, seen, `${color} ${material}`);
+    if (color && material && productType) appendKeyword(keywords, seen, `${color} ${material} ${productType}`);
     if (parsed?.style && productType) appendKeyword(keywords, seen, `${parsed.style} ${productType}`);
     if (parsed?.pattern && productType) appendKeyword(keywords, seen, `${parsed.pattern} ${productType}`);
     if (parsed?.brand_or_logo && productType) {
         appendKeyword(keywords, seen, `${parsed.brand_or_logo} ${productType}`);
     }
 
-    const primaryKeyword = normalizeKeyword(parsed?.primaryKeyword)
+    // Prefer precise product_type as the search identity (common sense).
+    const primaryKeyword = normalizeKeyword(productType)
+        || normalizeKeyword(parsed?.primaryKeyword)
         || normalizeKeyword(parsed?.object_label)
         || normalizeKeyword(parsed?.search_phrase)
         || keywords[0];
     if (!primaryKeyword) return null;
 
     const featureSummary = [
-        parsed?.object_label,
+        parsed?.object_label || productType,
+        productType && productType !== parsed?.object_label ? `type: ${productType}` : "",
         colors.length ? `colors: ${colors.join(", ")}` : "",
         materials.length ? `materials: ${materials.join(", ")}` : "",
         parsed?.shape ? `shape: ${parsed.shape}` : "",
@@ -171,14 +176,14 @@ const extractImageSearchKeywords = async (imageAddress) => {
 
     return {
         provider: "dashscope",
-        objectLabel: String(parsed?.object_label || parsed?.product_type || primaryKeyword || "").trim(),
+        objectLabel: String(parsed?.object_label || productType || primaryKeyword || "").trim(),
         primaryKeyword,
-        keywords: keywords.slice(0, 20),
+        keywords: keywords.slice(0, 16),
         searchPhrase: normalizeKeyword(parsed?.search_phrase) || primaryKeyword,
         featureSummary,
         attributes: {
             category: parsed?.category || "",
-            product_type: productType,
+            product_type: productType || primaryKeyword,
             color: color || colors.join(", "),
             colors,
             material: material || materials.join(", "),

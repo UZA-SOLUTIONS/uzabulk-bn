@@ -8,16 +8,65 @@ from PIL import Image
 import imagehash
 
 
-def image_hash_from_url(url: str) -> imagehash.ImageHash:
+def image_hashes_from_image(img: Image.Image) -> dict:
+    rgb = img.convert("RGB")
+    return {
+        "phash": str(imagehash.phash(rgb)),
+        "dhash": str(imagehash.dhash(rgb)),
+        "ahash": str(imagehash.average_hash(rgb)),
+    }
+
+
+def image_hashes_from_url(url: str) -> dict:
     response = requests.get(url, timeout=6)
     response.raise_for_status()
-    img = Image.open(BytesIO(response.content)).convert("RGB")
-    return imagehash.phash(img)
+    img = Image.open(BytesIO(response.content))
+    return image_hashes_from_image(img)
+
+
+def image_hashes_from_path(path: str) -> dict:
+    img = Image.open(path)
+    return image_hashes_from_image(img)
+
+
+def image_hash_from_url(url: str) -> imagehash.ImageHash:
+    return imagehash.hex_to_hash(image_hashes_from_url(url)["phash"])
 
 
 def image_hash_from_path(path: str) -> imagehash.ImageHash:
-    img = Image.open(path).convert("RGB")
-    return imagehash.phash(img)
+    return imagehash.hex_to_hash(image_hashes_from_path(path)["phash"])
+
+
+def combined_similarity(query_hashes: dict, item: dict) -> float:
+    """Blend pHash + dHash + aHash for fewer false positives than pHash alone."""
+    stored = item.get("hashes") if isinstance(item.get("hashes"), dict) else None
+    if not stored:
+        hash_str = str(item.get("hash", "")).strip()
+        if not hash_str:
+            return 0.0
+        try:
+            distance = imagehash.hex_to_hash(query_hashes["phash"]) - imagehash.hex_to_hash(hash_str)
+            return max(0.0, 1.0 - (float(distance) / 64.0))
+        except Exception:
+            return 0.0
+
+    scores = []
+    weights = {"phash": 0.5, "dhash": 0.3, "ahash": 0.2}
+    for key, weight in weights.items():
+        q = str(query_hashes.get(key) or "").strip()
+        c = str(stored.get(key) or "").strip()
+        if not q or not c:
+            continue
+        try:
+            distance = imagehash.hex_to_hash(q) - imagehash.hex_to_hash(c)
+            scores.append((max(0.0, 1.0 - (float(distance) / 64.0)), weight))
+        except Exception:
+            continue
+
+    if not scores:
+        return 0.0
+    total_w = sum(w for _, w in scores) or 1.0
+    return sum(sim * w for sim, w in scores) / total_w
 
 
 def build_index(products_json: str, index_path: str, meta_path: str):
@@ -31,12 +80,13 @@ def build_index(products_json: str, index_path: str, meta_path: str):
         if not offer_id or not image_url:
             continue
         try:
-            phash = image_hash_from_url(image_url)
+            hashes = image_hashes_from_url(image_url)
             meta.append({
                 "offerId": offer_id,
                 "imageUrl": image_url,
                 "name": product.get("name", ""),
-                "hash": str(phash),
+                "hash": hashes["phash"],
+                "hashes": hashes,
             })
         except Exception:
             continue
@@ -55,12 +105,17 @@ def build_index(products_json: str, index_path: str, meta_path: str):
     print(json.dumps({"status": "ok", "count": len(meta), "indexPath": index_path, "metaPath": meta_path}))
 
 
-def resolve_query_hash(query_url: str = "", query_file: str = ""):
+def resolve_query_hashes(query_url: str = "", query_file: str = "") -> dict:
     if query_file:
-        return image_hash_from_path(query_file)
+        return image_hashes_from_path(query_file)
     if query_url:
-        return image_hash_from_url(query_url)
+        return image_hashes_from_url(query_url)
     raise ValueError("query_url or query_file is required")
+
+
+def resolve_query_hash(query_url: str = "", query_file: str = ""):
+    hashes = resolve_query_hashes(query_url=query_url, query_file=query_file)
+    return imagehash.hex_to_hash(hashes["phash"])
 
 
 def search_index(query_url: str, top_k: int, index_path: str, meta_path: str, query_file: str = ""):
@@ -71,19 +126,13 @@ def search_index(query_url: str, top_k: int, index_path: str, meta_path: str, qu
     with open(index_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
 
-    query_hash = resolve_query_hash(query_url=query_url, query_file=query_file)
+    query_hashes = resolve_query_hashes(query_url=query_url, query_file=query_file)
 
     scored = []
     for item in meta:
-        hash_str = str(item.get("hash", "")).strip()
-        if not hash_str:
+        similarity = combined_similarity(query_hashes, item)
+        if similarity <= 0:
             continue
-        try:
-            candidate_hash = imagehash.hex_to_hash(hash_str)
-        except Exception:
-            continue
-        distance = query_hash - candidate_hash
-        similarity = max(0.0, 1.0 - (float(distance) / 64.0))
         scored.append({
             "offerId": item.get("offerId"),
             "imageUrl": item.get("imageUrl"),
@@ -95,6 +144,7 @@ def search_index(query_url: str, top_k: int, index_path: str, meta_path: str, qu
     results = scored[: max(1, top_k)]
     print(json.dumps({"status": "ok", "count": len(results), "results": results}))
 
+
 def search_live(query_url: str, top_k: int, products_json: str, query_file: str = ""):
     if not os.path.exists(products_json):
         print(json.dumps({"status": "error", "message": "products_json not found", "results": []}))
@@ -103,7 +153,7 @@ def search_live(query_url: str, top_k: int, products_json: str, query_file: str 
     with open(products_json, "r", encoding="utf-8") as f:
         products = json.load(f)
 
-    query_hash = resolve_query_hash(query_url=query_url, query_file=query_file)
+    query_hashes = resolve_query_hashes(query_url=query_url, query_file=query_file)
     scored = []
     for product in products:
         offer_id = str(product.get("offerId", "")).strip()
@@ -111,9 +161,11 @@ def search_live(query_url: str, top_k: int, products_json: str, query_file: str 
         if not offer_id or not image_url:
             continue
         try:
-            candidate_hash = image_hash_from_url(image_url)
-            distance = query_hash - candidate_hash
-            similarity = max(0.0, 1.0 - (float(distance) / 64.0))
+            hashes = image_hashes_from_url(image_url)
+            similarity = combined_similarity(query_hashes, {
+                "hash": hashes["phash"],
+                "hashes": hashes,
+            })
             scored.append({
                 "offerId": offer_id,
                 "imageUrl": image_url,

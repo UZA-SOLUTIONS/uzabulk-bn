@@ -217,7 +217,15 @@ const GENERIC_NEEDLE_TERMS = new Set([
     "electronics", "electronic", "accessories", "accessory", "general", "other",
     "new", "hot", "best", "quality", "high", "premium", "original", "genuine",
     "color", "colour", "style", "fashion", "portable", "mini", "small", "large",
-    "gray", "grey",
+    "gray", "grey", "pink", "beige", "olive", "brown", "yellow", "purple",
+    "metal", "silicone", "cotton", "plastic", "leather", "wood", "glass",
+    "standard", "smooth", "solid", "basic", "modern", "cylindrical", "round",
+    "visible", "not", "everyday", "wear", "clothing", "handle", "spout",
+]);
+
+const NOISE_NEEDLE_PHRASES = new Set([
+    "not visible", "everyday wear", "low-rise cut", "silicone silicone",
+    "silicone profiled", "olive fruit", "olive fruit powder",
 ]);
 
 const distillCatalogTerm = (value = "") => {
@@ -227,7 +235,23 @@ const distillCatalogTerm = (value = "") => {
     return words.join(" ").trim();
 };
 
-/** Short product-name needles for image search (built from scanned visual features). */
+const isNoiseNeedle = (value = "") => {
+    const distilled = distillCatalogTerm(value);
+    if (!distilled || distilled.length < 3) return true;
+    if (NOISE_NEEDLE_PHRASES.has(distilled)) return true;
+    const words = distilled.split(" ").filter(Boolean);
+    if (!words.length) return true;
+    // Pure color / material / adjective-only needles are useless as primary search.
+    if (words.every((word) => GENERIC_NEEDLE_TERMS.has(word))) return true;
+    if (words.length === 1 && GENERIC_NEEDLE_TERMS.has(words[0])) return true;
+    return false;
+};
+
+/**
+ * Build catalog search needles with COMMON-SENSE product identity first.
+ * Order: product_type → primary keyword → object label → typed compounds → extras.
+ * Never prioritize bare colors/materials or polluted vocabulary expansions.
+ */
 const buildImageSearchCatalogNeedles = ({
     primaryKeyword = "",
     searchPhrase = "",
@@ -236,80 +260,116 @@ const buildImageSearchCatalogNeedles = ({
     categoryHint = "",
     attributes = {},
 } = {}) => {
-    const needles = [];
+    const identity = [];
+    const support = [];
     const seen = new Set();
-    const add = (value) => {
+
+    const push = (bucket, value) => {
         const distilled = distillCatalogTerm(value);
         if (!distilled || distilled.length < 3 || seen.has(distilled)) return;
+        if (isNoiseNeedle(distilled)) return;
         seen.add(distilled);
-        needles.push(distilled);
+        bucket.push(distilled);
     };
 
     const attrs = attributes && typeof attributes === "object" ? attributes : {};
     const colors = Array.isArray(attrs.colors) ? attrs.colors : (attrs.color ? [attrs.color] : []);
     const materials = Array.isArray(attrs.materials) ? attrs.materials : (attrs.material ? [attrs.material] : []);
-    const distinctive = Array.isArray(attrs.distinctive_features) ? attrs.distinctive_features : [];
-    const parts = Array.isArray(attrs.parts_and_components) ? attrs.parts_and_components : [];
+    const productType = distillCatalogTerm(attrs.product_type || "");
+    const primary = distillCatalogTerm(primaryKeyword);
+    const label = distillCatalogTerm(objectLabel);
+    const phrase = distillCatalogTerm(searchPhrase);
 
-    add(primaryKeyword);
-    add(objectLabel);
-    add(attrs.product_type);
-    add(attrs.brand_or_logo);
-    add(categoryHint || attrs.category);
-    (Array.isArray(keywords) ? keywords : []).slice(0, 12).forEach(add);
-    distinctive.slice(0, 6).forEach(add);
-    parts.slice(0, 4).forEach(add);
-    add(attrs.style);
-    add(attrs.pattern);
-    add(attrs.shape);
-    add(attrs.finish);
-    add(attrs.visible_text);
-    add(attrs.use_case);
+    // 1) Identity — what the user is actually looking for
+    push(identity, productType);
+    push(identity, primary);
+    push(identity, label);
+    push(identity, phrase);
 
-    const productType = distillCatalogTerm(attrs.product_type || primaryKeyword || objectLabel);
-    colors.slice(0, 3).forEach((color) => {
-        add(color);
-        if (productType) add(`${color} ${productType}`);
+    // Core noun phrases from identity strings (e.g. "milk pot", "cotton underwear")
+    ;[productType, primary, label, phrase].filter(Boolean).forEach((text) => {
+        const words = text.split(" ").filter((word) => word.length > 2 && !GENERIC_NEEDLE_TERMS.has(word));
+        if (words.length >= 2) {
+            push(identity, words.slice(-2).join(" ")); // "milk pot", "gas cylinder"
+            push(identity, words.slice(0, 2).join(" "));
+            if (words.length >= 3) push(identity, words.slice(0, 3).join(" "));
+        } else if (words.length === 1) {
+            push(identity, words[0]);
+        }
     });
-    materials.slice(0, 3).forEach((material) => {
-        add(material);
-        if (productType) add(`${material} ${productType}`);
-    });
-    if (attrs.style && productType) add(`${attrs.style} ${productType}`);
-    if (attrs.pattern && productType) add(`${attrs.pattern} ${productType}`);
-    if (attrs.brand_or_logo && productType) add(`${attrs.brand_or_logo} ${productType}`);
 
-    add(searchPhrase);
-
-    const baseWords = normalizeTerm(primaryKeyword || objectLabel || searchPhrase)
-        .split(" ")
-        .filter((word) => word.length > 2 && !IMAGE_SEARCH_STOP_WORDS.has(word));
-
-    if (baseWords.length >= 2) {
-        add(baseWords.slice(0, 2).join(" "));
-        if (baseWords.length >= 3) add(baseWords.slice(0, 3).join(" "));
-    } else if (baseWords.length === 1) {
-        add(baseWords[0]);
+    // 2) Typed compounds — color/material + product type (not color alone)
+    if (productType || primary || label) {
+        const typeAnchor = productType || primary || label;
+        colors.slice(0, 2).forEach((color) => push(support, `${color} ${typeAnchor}`));
+        materials.slice(0, 2).forEach((material) => push(support, `${material} ${typeAnchor}`));
+        if (attrs.style) push(support, `${attrs.style} ${typeAnchor}`);
+        if (attrs.brand_or_logo) push(support, `${attrs.brand_or_logo} ${typeAnchor}`);
     }
 
-    return needles.sort((a, b) => a.length - b.length).slice(0, 12);
+    // 3) Secondary keywords — only if they still look like product phrases
+    (Array.isArray(keywords) ? keywords : []).slice(0, 8).forEach((kw) => {
+        const distilled = distillCatalogTerm(kw);
+        if (!distilled || isNoiseNeedle(distilled)) return;
+        const words = distilled.split(" ").filter(Boolean);
+        const hasConcreteNoun = words.some((word) => !GENERIC_NEEDLE_TERMS.has(word) && word.length > 3);
+        if (!hasConcreteNoun) return;
+        // Prefer multi-word product phrases over single adjectives
+        if (words.length >= 2 || !GENERIC_NEEDLE_TERMS.has(words[0])) {
+            push(support, distilled);
+        }
+    });
+
+    if (categoryHint || attrs.category) push(support, categoryHint || attrs.category);
+
+    // Identity first, then support. Cap tightly so ES doesn't chase noise.
+    return [...identity, ...support].slice(0, 10);
 };
 
-const rankImageSearchNeedles = (needles = []) => {
+const rankImageSearchNeedles = (needles = [], identityHints = {}) => {
+    const identityText = [
+        identityHints.productType,
+        identityHints.primaryKeyword,
+        identityHints.objectLabel,
+        identityHints.searchPhrase,
+    ].filter(Boolean).join(" ");
+    const identityTokens = new Set(
+        distillCatalogTerm(identityText)
+            .split(" ")
+            .filter((word) => word.length > 2 && !GENERIC_NEEDLE_TERMS.has(word))
+    );
+
     const unique = [...new Set(
         (needles || []).map((needle) => distillCatalogTerm(needle)).filter((needle) => needle.length >= 3)
     )];
 
     return unique
-        .filter((needle) => {
-            const words = needle.split(" ").filter(Boolean);
-            if (words.length === 1 && GENERIC_NEEDLE_TERMS.has(words[0])) return false;
-            return true;
-        })
+        .filter((needle) => !isNoiseNeedle(needle))
         .map((needle) => {
             const words = needle.split(" ").filter(Boolean);
-            let score = words.length * 25 + Math.min(needle.length, 40);
-            if (words.some((word) => !GENERIC_NEEDLE_TERMS.has(word) && word.length > 3)) score += 10;
+            let score = words.length * 12 + Math.min(needle.length, 28);
+
+            // Strong boost when needle overlaps the scanned product identity.
+            let identityHits = 0;
+            words.forEach((word) => {
+                if (identityTokens.has(word)) identityHits += 1;
+            });
+            if (identityHits >= 2) score += 80;
+            else if (identityHits === 1) score += 40;
+
+            // Exact / near-exact identity phrase wins.
+            const needleKey = needle;
+            if (
+                needleKey === distillCatalogTerm(identityHints.productType)
+                || needleKey === distillCatalogTerm(identityHints.primaryKeyword)
+                || needleKey === distillCatalogTerm(identityHints.objectLabel)
+            ) {
+                score += 120;
+            }
+
+            if (words.every((word) => GENERIC_NEEDLE_TERMS.has(word))) score -= 100;
+            if (words.some((word) => !GENERIC_NEEDLE_TERMS.has(word) && word.length > 3)) score += 8;
+
             return { needle, score };
         })
         .sort((a, b) => b.score - a.score)
@@ -399,12 +459,13 @@ const searchCatalogByElasticsearchNeedles = async ({
     fieldName,
     fieldValue,
     maxNeedles = IMAGE_SEARCH_ES_MAX_NEEDLES,
+    identityHints = {},
 } = {}) => {
     if (!IMAGE_SEARCH_USE_ES || !(await getElasticsearchAvailability())) {
         return { items: [], total: 0, engine: "none" };
     }
 
-    const ranked = rankImageSearchNeedles(needles).slice(0, maxNeedles);
+    const ranked = rankImageSearchNeedles(needles, identityHints).slice(0, Math.min(maxNeedles, 6));
     if (!ranked.length) return { items: [], total: 0, engine: "none" };
 
     const cap = Math.max(1, Math.min(Number(limit) || 32, 48));
@@ -412,6 +473,8 @@ const searchCatalogByElasticsearchNeedles = async ({
     const seen = new Set();
     let total = 0;
     const terms = { primary: ranked[0], exactPhrase: ranked[0] };
+
+    console.log(`[catalog-image-es] identity-first needles: ${ranked.join("|")}`);
 
     for (const needle of ranked) {
         if (merged.length >= cap) break;
@@ -434,11 +497,18 @@ const searchCatalogByElasticsearchNeedles = async ({
                 const key = itemKey(item);
                 if (!key || seen.has(key)) return;
                 seen.add(key);
-                merged.push(sanitizeSearchItem(item));
+                merged.push({
+                    ...sanitizeSearchItem(item),
+                    matched_needle: needle,
+                });
             });
             console.log(
                 `[catalog-image-es] needle="${needle}" -> ${payload.items.length} (${Date.now() - started}ms)`
             );
+            // If the top identity needle already filled the page with hits, stop chasing weak needles.
+            if (needle === ranked[0] && payload.items.length >= Math.min(8, cap)) {
+                break;
+            }
         } catch (error) {
             console.warn(`[catalog-image-es] needle="${needle}" failed:`, error?.message || error);
         }
@@ -866,29 +936,48 @@ const searchCatalogForImage = async ({
 } = {}) => {
     const { expandNeedlesForImageSearch } = require("./catalogVocabularyService");
 
+    const primaryKeyword = vision?.primaryKeyword || search;
+    const searchPhrase = vision?.searchPhrase || search;
+    const objectLabel = vision?.objectLabel || "";
+    const productType = vision?.attributes?.product_type || "";
+    const identityHints = {
+        productType,
+        primaryKeyword,
+        objectLabel,
+        searchPhrase,
+    };
+
     let needles = buildImageSearchCatalogNeedles({
-        primaryKeyword: vision?.primaryKeyword || search,
-        searchPhrase: vision?.searchPhrase || search,
-        objectLabel: vision?.objectLabel || "",
+        primaryKeyword,
+        searchPhrase,
+        objectLabel,
         keywords: vision?.keywords || [],
         categoryHint: vision?.attributes?.category || "",
         attributes: vision?.attributes || {},
     });
 
+    // Only expand with live catalog phrases that still agree with product identity.
     needles = await expandNeedlesForImageSearch({
         needles,
-        primaryKeyword: vision?.primaryKeyword || search,
-        searchPhrase: vision?.searchPhrase || search,
-        objectLabel: vision?.objectLabel || "",
+        primaryKeyword,
+        searchPhrase,
+        objectLabel,
         keywords: vision?.keywords || [],
         categoryHint: vision?.attributes?.category || "",
+        productType,
+        identityHints,
+        maxExtra: 3,
     });
 
+    needles = rankImageSearchNeedles(needles, identityHints);
+
     if (!needles.length) {
-        const raw = String(search || "").trim();
+        const raw = String(primaryKeyword || objectLabel || search || "").trim();
         if (!raw) return { items: [], total: 0, engine: "none" };
         needles.push(raw);
     }
+
+    console.log(`[catalog-image] searching as: "${needles[0]}" (${needles.slice(0, 5).join(" | ")})`);
 
     const esResult = await searchCatalogByElasticsearchNeedles({
         needles,
@@ -897,6 +986,7 @@ const searchCatalogForImage = async ({
         category,
         fieldName,
         fieldValue,
+        identityHints,
     });
     if (esResult.items.length) {
         return esResult;

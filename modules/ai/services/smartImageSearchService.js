@@ -96,7 +96,7 @@ const mergeItems = (target = [], incoming = [], { scoreBoost = 0 } = {}) => {
                 existing.similarity_score = item.similarity_score;
             }
             const minSim = Math.min(
-                Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_MIN_SIMILARITY || 0.38), 0),
+                Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_MIN_SIMILARITY || 0.48), 0),
                 1
             );
             const incomingStrongVisual =
@@ -168,29 +168,130 @@ const isVisualFirstImageSearch = () =>
 const minVisualResultsForPrimary = () =>
     Math.max(Number(process.env.IMAGE_SEARCH_VISUAL_MIN_RESULTS || 2), 1);
 
-/** Visual matches first (highest % on top), then everything else by relevance score. */
+/** Visual matches first (highest % on top), then everything else by relevance score.
+ *  Dual visual+keyword hits rank above visual-only or keyword-only. */
 const prioritizeVisualMatches = (items = []) => {
+    const dual = [];
     const visual = [];
     const rest = [];
 
     (items || []).forEach((item) => {
-        if (isVisualMatchItem(item)) visual.push(item);
+        const signals = item?.match_signals || [];
+        const isDual = signals.includes("visual+keyword")
+            || (isVisualMatchItem(item) && Number(item?.keyword_hit_count || 0) >= 1);
+        if (isDual) dual.push(item);
+        else if (isVisualMatchItem(item)) visual.push(item);
         else rest.push(item);
     });
 
-    visual.sort(
-        (a, b) => Number(b.similarity_score || 0) - Number(a.similarity_score || 0)
-    );
+    const byVisualThenScore = (a, b) => {
+        const simDiff = Number(b.similarity_score || 0) - Number(a.similarity_score || 0);
+        if (simDiff !== 0) return simDiff;
+        return Number(b.match_score || b._score || 0) - Number(a.match_score || a._score || 0);
+    };
+
+    dual.sort(byVisualThenScore);
+    visual.sort(byVisualThenScore);
     rest.sort((a, b) => {
         const scoreA = Number(a.match_score || a._score || 0);
         const scoreB = Number(b.match_score || b._score || 0);
         return scoreB - scoreA;
     });
 
-    return [...visual, ...rest];
+    return [...dual, ...visual, ...rest];
 };
 
 const rankItems = (items = []) => prioritizeVisualMatches(items);
+
+const normalizeMatchText = (value = "") =>
+    String(value || "").toLowerCase().replace(/[^\w\s-]/g, " ").replace(/\s+/g, " ").trim();
+
+const tokenizeMatchText = (value = "") =>
+    normalizeMatchText(value).split(" ").filter((word) => word.length > 2);
+
+/**
+ * Fuse visual comparison scores with keywords extracted from the image scan.
+ * Items that agree on both signals rise; visual-only mismatches are demoted.
+ */
+const fuseVisualAndKeywordMatches = (items = [], vision = null) => {
+    if (!Array.isArray(items) || !items.length) return [];
+
+    const attrs = vision?.attributes || {};
+    const keywordPool = [
+        attrs.product_type,
+        vision?.objectLabel,
+        vision?.primaryKeyword,
+        vision?.searchPhrase,
+        ...(Array.isArray(vision?.keywords) ? vision.keywords.slice(0, 10) : []),
+        ...(Array.isArray(attrs.colors) ? attrs.colors.slice(0, 3) : []),
+        ...(Array.isArray(attrs.materials) ? attrs.materials.slice(0, 3) : []),
+        attrs.shape,
+        attrs.style,
+        attrs.brand_or_logo,
+    ].filter(Boolean);
+
+    const typeTokens = new Set();
+    const featureTokens = new Set();
+    keywordPool.forEach((value, index) => {
+        tokenizeMatchText(value).forEach((token) => {
+            if (index < 4) typeTokens.add(token);
+            featureTokens.add(token);
+        });
+    });
+
+    return (items || []).map((item) => {
+        if (!item || typeof item !== "object") return item;
+
+        const name = normalizeMatchText(item.name || "");
+        const desc = normalizeMatchText(item.short_description || "");
+        const haystack = `${name} ${desc}`;
+        const itemTokens = new Set(tokenizeMatchText(haystack));
+
+        let typeHits = 0;
+        typeTokens.forEach((token) => {
+            if (itemTokens.has(token) || name.includes(token)) typeHits += 1;
+        });
+
+        let featureHits = 0;
+        featureTokens.forEach((token) => {
+            if (itemTokens.has(token) || haystack.includes(token)) featureHits += 1;
+        });
+
+        const isVisual = isVisualMatchItem(item);
+        const signals = [];
+        if (isVisual) signals.push("visual");
+        if (typeHits >= 1 || featureHits >= 2) signals.push("keyword");
+        if (isVisual && (typeHits >= 1 || featureHits >= 2)) signals.push("visual+keyword");
+
+        let boost = 0;
+        if (typeHits >= 1) boost += typeHits * 8;
+        if (featureHits >= 2) boost += Math.min(featureHits, 6) * 2;
+        if (signals.includes("visual+keyword")) boost += 24;
+        if (isVisual && typeTokens.size >= 2 && typeHits === 0) boost -= 18;
+
+        const base = Number(item.match_score || item.similarity_score || item._score || 0);
+        const next = {
+            ...item,
+            keyword_hit_count: typeHits + featureHits,
+            keyword_type_hits: typeHits,
+            match_signals: signals,
+            match_score: Number((base + boost).toFixed(4)),
+        };
+
+        // Visual hit that completely disagrees with scanned product type → weak_visual.
+        if (
+            isVisual
+            && typeTokens.size >= 2
+            && typeHits === 0
+            && Number(item.similarity_score || 0) < 0.7
+        ) {
+            next.match_type = "weak_visual";
+        }
+
+        return next;
+    });
+};
+
 
 const VISION_CACHE = new Map();
 const VISION_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -253,13 +354,19 @@ const resolveVision = async (imageUrl, fallbackSearch = "") => {
  * Visual (pHash) similarity runs in parallel and boosts exact photo matches.
  */
 const VISUAL_SEARCH_BUDGET_MS = Math.min(
-    Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_BUDGET_MS || 12000), 4000),
+    Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_BUDGET_MS || 8000), 3000),
     25000
 );
 
 const FEATURE_SCAN_BUDGET_MS = Math.min(
-    Math.max(Number(process.env.IMAGE_SEARCH_FEATURE_SCAN_BUDGET_MS || 18000), 6000),
+    Math.max(Number(process.env.IMAGE_SEARCH_FEATURE_SCAN_BUDGET_MS || 12000), 4000),
     35000
+);
+
+/** When local visual hits are strong enough, skip slow keyword/embedding fallbacks. */
+const STRONG_VISUAL_SIMILARITY = Math.min(
+    Math.max(Number(process.env.IMAGE_SEARCH_STRONG_VISUAL_SIMILARITY || 0.58), 0.45),
+    0.95
 );
 
 const isFeatureFirstImageSearch = () =>
@@ -277,8 +384,6 @@ const resolveSmartImageSearch = async ({
     fallbackSearch = "",
 } = {}) => {
     const pageLimit = Math.max(1, Math.min(Number(limit) || 24, 48));
-    const visualFirst = isVisualFirstImageSearch();
-    const featureFirst = isFeatureFirstImageSearch();
     const minVisual = minVisualResultsForPrimary();
     const minResults = Math.min(3, pageLimit);
     const mongoReady = isMongoConnected();
@@ -327,20 +432,31 @@ const resolveSmartImageSearch = async ({
 
     const visualMatches = items.filter(isVisualMatchItem);
     const visualCount = visualMatches.length;
+    const topVisualSimilarity = visualMatches.reduce(
+        (max, item) => Math.max(max, Number(item.similarity_score || 0)),
+        0
+    );
+    const strongVisualPrimary =
+        visualCount >= minVisual
+        && topVisualSimilarity >= STRONG_VISUAL_SIMILARITY;
 
-    // 2) Search catalog by scanned features (always when we have feature keywords)
+    // 2) ALWAYS search catalog with keywords extracted from the image scan,
+    //    and keep visual comparison results. Both signals are fused later.
     const primaryKeyword = vision?.primaryKeyword || vision?.searchPhrase || vision?.objectLabel || "";
     const keywords = (vision?.keywords || []).slice(0, 12);
     const searchPhrase = vision?.searchPhrase || primaryKeyword;
     const hasFeatureNeedles = Boolean(primaryKeyword || searchPhrase || keywords.length);
 
-    if (hasFeatureNeedles && (featureFirst || !visualFirst || visualCount < minVisual || visualCount === 0)) {
+    if (hasFeatureNeedles) {
         if (visualCount > 0) searchMode = "feature+visual";
         else searchMode = "feature";
 
         provider = provider === "none"
             ? (vision?.provider || "ai-vision")
             : `${provider}+feature-match`;
+
+        // Refresh relevance context with scanned keywords before filtering supplements.
+        relevanceContext = buildRelevanceContext(vision, visualMatches);
 
         const catalogNeedles = await require("../../products/services/catalogVocabularyService")
             .expandNeedlesForImageSearch({
@@ -364,17 +480,23 @@ const resolveSmartImageSearch = async ({
         try {
             const catalogResult = await getSearchCatalogForImage()({
                 search: primaryKeyword || searchPhrase,
-                limit: pageLimit,
+                // Keep keyword search active even with strong visual hits.
+                limit: strongVisualPrimary ? Math.min(pageLimit, 16) : pageLimit,
                 skip,
                 category,
                 fieldName,
                 fieldValue,
                 vision,
             });
-            const catalogItems = normalizeCatalogItems(catalogResult?.items || []);
+            const catalogItems = normalizeCatalogItems(catalogResult?.items || []).map((item) => ({
+                ...item,
+                match_type: item.match_type || "keyword",
+                match_signals: ["keyword"],
+            }));
             if (catalogItems.length) {
                 const filtered = filterSupplementalItems(catalogItems, relevanceContext);
-                mergeItems(items, filtered, { scoreBoost: visualCount ? 2 : 8 });
+                // Visual already present → smaller boost; keywords alone → larger boost.
+                mergeItems(items, filtered, { scoreBoost: visualCount ? 4 : 10 });
                 const engine = catalogResult?.engine || "catalog";
                 provider = engine === "elasticsearch"
                     ? `${provider}+catalog-es`
@@ -384,19 +506,25 @@ const resolveSmartImageSearch = async ({
             console.warn("[smart-image-search] feature catalog failed:", catalogErr?.message || catalogErr);
         }
 
-        if (embeddingPrimaryEnabled && mongoReady && (searchPhrase || primaryKeyword)) {
+        // Embedding search from the scanned search phrase (lighter when visual is already strong).
+        if (
+            embeddingPrimaryEnabled
+            && mongoReady
+            && (searchPhrase || primaryKeyword)
+        ) {
             try {
                 const embedded = await searchCatalogByEmbeddingPhrase(
                     searchPhrase || primaryKeyword,
-                    { limit: pageLimit }
+                    { limit: strongVisualPrimary ? Math.min(pageLimit, 10) : pageLimit }
                 );
                 if (embedded.length) {
                     const taggedEmbed = embedded.map((item) => ({
                         ...item,
                         match_type: item.match_type || "embedding",
+                        match_signals: ["keyword"],
                     }));
                     const filteredEmbed = filterSupplementalItems(taggedEmbed, relevanceContext);
-                    mergeItems(items, filteredEmbed, { scoreBoost: visualCount ? 1 : 7 });
+                    mergeItems(items, filteredEmbed, { scoreBoost: visualCount ? 2 : 7 });
                     provider = `${provider}+embedding`;
                 }
             } catch (embedErr) {
@@ -404,6 +532,7 @@ const resolveSmartImageSearch = async ({
             }
         }
 
+        // Text fallback only when neither visual nor keyword catalog produced enough.
         if (visualCount === 0 && items.length < pageLimit) {
             try {
                 const textResult = await getSearchCatalogByText()({
@@ -416,7 +545,11 @@ const resolveSmartImageSearch = async ({
                     fast: true,
                     skipExternal: true,
                 });
-                const textItems = normalizeCatalogItems(textResult?.items || []);
+                const textItems = normalizeCatalogItems(textResult?.items || []).map((item) => ({
+                    ...item,
+                    match_type: item.match_type || "keyword",
+                    match_signals: ["keyword"],
+                }));
                 const filteredText = filterSupplementalItems(textItems, relevanceContext);
                 if (filteredText.length) {
                     mergeItems(items, filteredText, { scoreBoost: 2 });
@@ -426,6 +559,14 @@ const resolveSmartImageSearch = async ({
                 console.warn("[smart-image-search] catalog text fallback failed:", textErr?.message || textErr);
             }
         }
+    } else if (visualCount > 0) {
+        searchMode = "visual";
+    }
+
+    if (strongVisualPrimary && hasFeatureNeedles) {
+        console.log(
+            `[smart-image-search] visual+keyword fusion topVisual=${topVisualSimilarity.toFixed(3)} kw="${primaryKeyword}"`
+        );
     }
 
     // 3) Optional expansion from strong visual seeds
@@ -523,11 +664,15 @@ const resolveSmartImageSearch = async ({
     }
 
     relevanceContext = buildRelevanceContext(vision, items.filter(isVisualMatchItem));
+    // Fuse visual comparison + scanned keywords before rerank/filter.
+    items = fuseVisualAndKeywordMatches(items, vision);
     items = rankItems(items);
     const rerankVision = vision || buildVisionFromVisualMatches(items.filter(isVisualMatchItem));
     if (items.length && rerankVision) {
         try {
             items = await rerankImageSearchItems(items, rerankVision);
+            // Re-apply fusion after metadata/semantic rerank so dual matches stay on top.
+            items = fuseVisualAndKeywordMatches(items, rerankVision);
         } catch (rerankErr) {
             console.warn("[smart-image-search] rerank failed:", rerankErr?.message || rerankErr);
         }
@@ -540,7 +685,11 @@ const resolveSmartImageSearch = async ({
             || inferVisionFromItems(items);
         if (vision) searchMode = isVisualMatchItem(items[0]) ? "visual" : "keyword";
     }
-    if (vision) vision.searchMode = searchMode;
+    if (vision) {
+        const hasDual = items.some((item) => (item.match_signals || []).includes("visual+keyword"));
+        if (hasDual) searchMode = "feature+visual";
+        vision.searchMode = searchMode;
+    }
 
     if (!items.length) {
         console.warn(

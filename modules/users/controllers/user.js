@@ -6,7 +6,21 @@ exports.profile = async (req, res) => {
   try {
     const user = await UserServices.findOneWithProfileImage({ _id: req.user._id });
     if (!user) return res.error("USER_NOT_FOUND");
-    return res.success("RECORD_FOUND", user);
+    const plain =
+      typeof user.toObject === "function"
+        ? user.toObject({ virtuals: false })
+        : { ...user };
+    delete plain.password;
+    delete plain.salt;
+    delete plain.OTP;
+    delete plain.OTPexp;
+    delete plain.restToken;
+    delete plain.tokens;
+    // Ensure Google avatar from a prior Google login is always returned for UI.
+    if (!plain.google_picture && user.google_picture) {
+      plain.google_picture = user.google_picture;
+    }
+    return res.success("RECORD_FOUND", plain);
   } catch (error) {
     console.error(error);
     res.error(error);

@@ -4,6 +4,17 @@ const TO_PROVINCE_CODE = env.alibaba.TO_PROVINCE_CODE;
 const TO_CITY_CODE = env.alibaba.TO_CITY_CODE;
 const TO_COUNTRY_CODE = env.alibaba.TO_COUNTRY_CODE;
 
+/** Logistics / customs cost constants (CNY) applied on top of 1688 freight. */
+const COST_CONSTANTS = {
+    base: 5,
+    weightRate: 5,
+    weight: 2,
+    volumeRate: 20,
+    volume: 1,
+    holdingFees: 10,
+    customDuties: 15,
+};
+
 const getShippingCostDetail = async (offerId, logisticsSkuNumModels, totalNum) => {
     const urlPath = client.urlPath(
         "com.alibaba.fenxiao.crossborder",
@@ -22,16 +33,23 @@ const getShippingCostDetail = async (offerId, logisticsSkuNumModels, totalNum) =
     return result.ok ? result.data : null;
 };
 
-const calculateShippingCost = async (offerId, items, exchangeRate) => {
-    const costs = {
-        base: 5,
-        weightRate: 5,
-        weight: 2,
-        volumeRate: 20,
-        volume: 1,
-        holdingFees: 10,
-        customDuties: 15,
+/**
+ * Call 1688 product.freight.estimate and split into delivery + tax (customs).
+ * - deliveryFee: Alibaba freight + logistics (base / weight / volume / holding)
+ * - tax: customs duties portion derived from API SKU freight models
+ */
+const calculateFreightAndTax = async (offerId, items, exchangeRate) => {
+    const costs = COST_CONSTANTS;
+    const empty = {
+        deliveryFee: 0,
+        tax: 0,
+        freightCny: 0,
+        logisticsCny: 0,
+        customsCny: 0,
+        source: "none",
     };
+
+    if (!offerId) return empty;
 
     const logisticsSkuNumModels = [];
     for (const item of items) {
@@ -47,27 +65,51 @@ const calculateShippingCost = async (offerId, items, exchangeRate) => {
 
     try {
         const shippingInfo = await getShippingCostDetail(offerId, logisticsSkuNumModels, totalNumber);
-        const skuCost = calculateCostsForMatchingSKUs(
+        if (!shippingInfo) {
+            return { ...empty, source: "1688_empty" };
+        }
+
+        const { logisticsCny, customsCny } = calculateSkuCosts(
             logisticsSkuNumModels,
             shippingInfo?.productFreightSkuInfoModels,
             costs
         );
         const freightCny = Number(shippingInfo?.freight) || 0;
-        const totalShippingCost = parseExchangeRate(skuCost + freightCny, exchangeRate);
 
-        return totalShippingCost;
+        return {
+            deliveryFee: parseExchangeRate(logisticsCny + freightCny, exchangeRate),
+            tax: parseExchangeRate(customsCny, exchangeRate),
+            freightCny,
+            logisticsCny,
+            customsCny,
+            source: "1688",
+        };
     } catch (error) {
-        console.error("Error calculating shipping cost:", error.message);
-        return null;
+        console.error("Error calculating 1688 freight/tax:", error.message);
+        return { ...empty, source: "error" };
     }
 };
 
-const calculateCostsForMatchingSKUs = (skuInfos, freightModels = [], costs) => {
-    let totalCost = 0;
+/** @deprecated Prefer calculateFreightAndTax — returns delivery + tax combined as shipping. */
+const calculateShippingCost = async (offerId, items, exchangeRate) => {
+    const result = await calculateFreightAndTax(offerId, items, exchangeRate);
+    return helperRound(result.deliveryFee + result.tax);
+};
+
+const calculateSkuCosts = (skuInfos, freightModels = [], costs) => {
+    let logisticsCny = 0;
+    let customsCny = 0;
+
+    if (!skuInfos.length) {
+        const fallback = fallbackCalculation(costs);
+        return {
+            logisticsCny: fallback.logisticsCny,
+            customsCny: fallback.customsCny,
+        };
+    }
 
     skuInfos.forEach((item) => {
         const matchingModel = freightModels.find((model) => String(model.skuId) === String(item.skuId));
-        let skuCost;
 
         if (matchingModel) {
             const weightCost = Number(matchingModel.singleSkuWeight || 0) * costs.weightRate;
@@ -78,25 +120,34 @@ const calculateCostsForMatchingSKUs = (skuInfos, freightModels = [], costs) => {
             ) / 1_000_000;
             const volumeCost = volume * costs.volumeRate;
 
-            skuCost = costs.base + weightCost + volumeCost + costs.holdingFees + costs.customDuties;
+            logisticsCny += costs.base + weightCost + volumeCost + costs.holdingFees;
+            customsCny += costs.customDuties;
         } else {
-            skuCost = fallbackCalculation(costs);
+            const fallback = fallbackCalculation(costs);
+            logisticsCny += fallback.logisticsCny;
+            customsCny += fallback.customsCny;
         }
-
-        totalCost += skuCost;
     });
 
-    return totalCost;
+    return { logisticsCny, customsCny };
 };
 
-const fallbackCalculation = (costs) =>
-    costs.base
-    + (costs.weight * costs.weightRate)
-    + (costs.volume * costs.volumeRate)
-    + costs.holdingFees
-    + costs.customDuties;
+const fallbackCalculation = (costs) => ({
+    logisticsCny:
+        costs.base
+        + (costs.weight * costs.weightRate)
+        + (costs.volume * costs.volumeRate)
+        + costs.holdingFees,
+    customsCny: costs.customDuties,
+});
 
 const parseExchangeRate = (amount, rate) =>
-    Number((Number(amount) * rate).toFixed(2));
+    Number((Number(amount) * Number(rate || 1)).toFixed(2));
 
-module.exports = { calculateShippingCost, getShippingCostDetail };
+const helperRound = (num) => Math.round(Number(num || 0) * 100) / 100;
+
+module.exports = {
+    calculateFreightAndTax,
+    calculateShippingCost,
+    getShippingCostDetail,
+};

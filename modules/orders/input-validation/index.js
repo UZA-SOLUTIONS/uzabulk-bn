@@ -4,7 +4,7 @@ const attributeTerms = require('../../../models/attributeTermsTable');
 const Pricing = require("../helper/pricing");
 const helper = require("../helper/index");
 const { priceExchange } = require('../../../helpers/helper');
-const { calculateShippingCost } = require("../services/alibaba");
+const { calculateFreightAndTax } = require("../services/alibaba");
 const ProductService = require("../services/product");
 
 let generateLineItems = async (product, items) => {
@@ -159,13 +159,19 @@ let generateLineItemsForCheckOut = async (exchangeRateOpt, data, carts, addressI
     let line_items = [];
     let totalItems = 0;
 
+    data.tax = 0;
+    data.deliveryFee = 0;
+
+    // Skip only when explicitly disabled (default: call 1688 freight.estimate for tax + delivery).
+    const skipFreight =
+        data?.skipFreightEstimate === true
+        || String(process.env.CHECKOUT_SKIP_FREIGHT_ESTIMATE ?? "false").toLowerCase() === "true";
+
     for (let index = 0; index < carts.length; index++) {
         const element = carts[index];
         const items = element.items;
 
-        // console.log(element.product);
         await priceExchange(element.product, exchangeRateOpt);
-        // console.log(element.product);
         await priceExchange(element.items, exchangeRateOpt);
 
         const itemsSubTotal = items.reduce((total, item) => total + item.amount, 0);
@@ -173,16 +179,35 @@ let generateLineItemsForCheckOut = async (exchangeRateOpt, data, carts, addressI
         await checkStock(items, isOrder);
         totalItems += items.reduce((sum, item) => sum + item.quantity, 0);
 
-        const { tax, taxAmount } = Pricing.taxCalculation(env.taxSettings, 0, itemsSubTotal);
-
-        // Delivery fees are disabled storefront-wide — do not call 1688 freight.estimate
-        // (60s timeout + retries was dominating checkout latency for a value we zero out).
-        const skipFreight =
-            data?.skipFreightEstimate === true
-            || String(process.env.CHECKOUT_SKIP_FREIGHT_ESTIMATE ?? "true").toLowerCase() !== "false";
+        let tax = 0;
+        let taxAmount = 0;
         let deliveryFee = 0;
-        if (!skipFreight && data?.shippingDetails && element.product?.offerId) {
-            deliveryFee = await calculateShippingCost(element.product.offerId, items, exchangeRate);
+        let freightSource = "fallback";
+
+        const canCall1688 = !skipFreight && element.product?.offerId;
+        if (canCall1688) {
+            const freight = await calculateFreightAndTax(
+                element.product.offerId,
+                items,
+                exchangeRate
+            );
+            deliveryFee = Number(freight.deliveryFee) || 0;
+            tax = Number(freight.tax) || 0;
+            freightSource = freight.source;
+        }
+
+        // If 1688 did not return customs tax, fall back to store tax % on this cart subtotal.
+        if (!tax) {
+            const fallback = Pricing.taxCalculation(env.taxSettings, 0, itemsSubTotal);
+            tax = Number(fallback.tax) || 0;
+            taxAmount = fallback.taxAmount;
+            if (freightSource === "fallback" || freightSource === "none") {
+                freightSource = "env_tax";
+            }
+        } else {
+            taxAmount = itemsSubTotal > 0
+                ? helper.roundNumber((tax * 100) / itemsSubTotal)
+                : 0;
         }
 
         const discountTotal = 0;
@@ -200,6 +225,7 @@ let generateLineItemsForCheckOut = async (exchangeRateOpt, data, carts, addressI
             taxAmount,
             deliveryFee,
             discountTotal,
+            freightSource,
             finalAmount: helper.toFixedNumber((itemsSubTotal + deliveryFee + tax) - discountTotal),
         });
     };

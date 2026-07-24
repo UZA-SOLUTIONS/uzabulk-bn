@@ -6,6 +6,7 @@ const getSearchCatalogForImage = () =>
 const STOP_WORDS = new Set([
     "the", "and", "with", "for", "from", "product", "products", "item", "items",
     "wholesale", "bulk", "new", "hot", "best", "quality", "high", "factory", "style",
+    "set", "pack", "pcs", "piece", "pieces", "lot",
 ]);
 
 const normalizeTerm = (value = "") =>
@@ -18,11 +19,11 @@ const isStrictImageSearchRelevance = () =>
     String(process.env.IMAGE_SEARCH_STRICT_RELEVANCE ?? "true").toLowerCase() !== "false";
 
 const minRelevanceScore = () =>
-    Math.max(Number(process.env.IMAGE_SEARCH_MIN_RELEVANCE_SCORE || 14), 0);
+    Math.max(Number(process.env.IMAGE_SEARCH_MIN_RELEVANCE_SCORE || 22), 0);
 
 const maxNonVisualSupplementCount = (pageLimit = 24) => Math.min(
-    // Stricter default when visual seeds exist — reduces junk fillers after a good match.
-    Math.max(Number(process.env.IMAGE_SEARCH_MAX_SUPPLEMENT_ITEMS || 4), 0),
+    // When we have visual seeds, keep fillers low. When keyword-only, allow more.
+    Math.max(Number(process.env.IMAGE_SEARCH_MAX_SUPPLEMENT_ITEMS || 8), 0),
     pageLimit
 );
 
@@ -37,6 +38,22 @@ const collectCategoryIds = (item) => {
     return (item.categories || [])
         .map((row) => String(row?._id || row || "").trim())
         .filter(Boolean);
+};
+
+const coreTypeTokensFromVision = (vision = null) => {
+    if (!vision) return new Set();
+    const attrs = vision.attributes || {};
+    const tokens = new Set();
+    [
+        attrs.product_type,
+        vision.objectLabel,
+        vision.primaryKeyword,
+    ].forEach((value) => {
+        tokenize(value)
+            .filter((word) => !STOP_WORDS.has(word) && word.length >= 3)
+            .forEach((word) => tokens.add(word));
+    });
+    return tokens;
 };
 
 const buildRelevanceContext = (vision = null, visualSeeds = []) => {
@@ -83,6 +100,7 @@ const buildRelevanceContext = (vision = null, visualSeeds = []) => {
         tokenize(topSeed?.name || "")
             .filter((word) => !STOP_WORDS.has(word) && word.length >= 3)
     );
+    const mustHaveTypeTokens = coreTypeTokensFromVision(vision);
 
     return {
         seeds,
@@ -91,13 +109,34 @@ const buildRelevanceContext = (vision = null, visualSeeds = []) => {
         seedTokens,
         topSeedCategoryIds,
         topSeedTokens,
+        mustHaveTypeTokens,
         vision,
     };
+};
+
+const hasRequiredTypeOverlap = (item, context = {}) => {
+    const required = context.mustHaveTypeTokens;
+    if (!required || !required.size) return true;
+
+    const name = normalizeTerm(item?.name || "");
+    const desc = normalizeTerm(item?.short_description || "");
+    const itemTokens = new Set(
+        tokenize(`${name} ${desc}`).filter((word) => !STOP_WORDS.has(word))
+    );
+
+    let hits = 0;
+    required.forEach((token) => {
+        if (itemTokens.has(token) || name.includes(token)) hits += 1;
+    });
+
+    // At least one core type token must appear (e.g. "cylinder", "propane", "boot").
+    return hits >= 1;
 };
 
 const scoreItemRelevance = (item, context = {}) => {
     if (!item || typeof item !== "object") return 0;
     if (isVisualMatchItem(item)) return 100;
+    if (!hasRequiredTypeOverlap(item, context)) return 0;
 
     const name = normalizeTerm(item?.name || "");
     const desc = normalizeTerm(item?.short_description || "");
@@ -120,7 +159,15 @@ const scoreItemRelevance = (item, context = {}) => {
         });
     }
 
-    let score = tokenOverlap * 10;
+    // Extra weight for product-type / object-label hits.
+    let typeHits = 0;
+    (context.mustHaveTypeTokens || new Set()).forEach((token) => {
+        if (itemTokens.includes(token)) typeHits += 1;
+        else if (name.includes(token)) typeHits += 0.6;
+    });
+    tokenOverlap += typeHits * 0.75;
+
+    let score = tokenOverlap * 12;
 
     const topSeedCategoryIds = context.topSeedCategoryIds || new Set();
     const seedCategoryIds = context.seedCategoryIds || new Set();
@@ -129,12 +176,12 @@ const scoreItemRelevance = (item, context = {}) => {
     const sharesSeedCategory = seedCategoryIds.size
         && [...seedCategoryIds].some((id) => itemCategoryIds.has(id));
 
-    if (sharesTopCategory) score += 18;
-    else if (sharesSeedCategory) score += 8;
+    if (sharesTopCategory) score += 22;
+    else if (sharesSeedCategory) score += 10;
 
     const primary = normalizeTerm(context.topSeed?.name || context.vision?.searchPhrase || "");
     if (primary && name.includes(primary.slice(0, Math.min(primary.length, 24)))) {
-        score += 12;
+        score += 14;
     }
 
     if (!context.seeds?.length && context.vision) {
@@ -144,10 +191,12 @@ const scoreItemRelevance = (item, context = {}) => {
             if (itemTokens.includes(token)) kwOverlap += 1;
             else if (name.includes(token)) kwOverlap += 0.5;
         });
-        return kwOverlap >= 1.5 ? Number((kwOverlap * 10).toFixed(4)) : 0;
+        // Require stronger keyword overlap when there is no visual seed.
+        if (kwOverlap < 2 || typeHits < 1) return 0;
+        return Number((kwOverlap * 12 + typeHits * 8).toFixed(4));
     }
 
-    if (!sharesTopCategory && !sharesSeedCategory && tokenOverlap < 1.5) {
+    if (!sharesTopCategory && !sharesSeedCategory && tokenOverlap < 2) {
         return 0;
     }
 
@@ -163,16 +212,25 @@ const pruneOutlierVisualMatches = (visual = [], context = {}) => {
     const top = sorted[0];
     const topSim = Number(top.similarity_score || 0);
     const topCats = context.topSeedCategoryIds || new Set();
+    const maxGap = Math.max(Number(process.env.IMAGE_SEARCH_VISUAL_MAX_GAP || 0.08), 0.03);
 
     return sorted.filter((item, index) => {
         if (!item || typeof item !== "object") return false;
         if (index === 0) return true;
         const sim = Number(item.similarity_score || 0);
-        if (!topCats.size) return topSim - sim <= 0.15;
-        const itemCats = new Set(collectCategoryIds(item));
-        const sameCategory = [...topCats].some((id) => itemCats.has(id));
-        if (!sameCategory) return false;
-        return topSim - sim <= 0.15;
+        if (topSim - sim > maxGap) return false;
+
+        if (topCats.size) {
+            const itemCats = new Set(collectCategoryIds(item));
+            const sameCategory = [...topCats].some((id) => itemCats.has(id));
+            if (!sameCategory) return false;
+        }
+
+        // Drop visual "matches" that disagree with VL product type.
+        if (!hasRequiredTypeOverlap(item, context) && (context.mustHaveTypeTokens?.size || 0) >= 2) {
+            return false;
+        }
+        return true;
     });
 };
 
@@ -197,11 +255,19 @@ const filterImageSearchResults = (items = [], context = {}, { pageLimit = 24 } =
     });
 
     visual.sort((a, b) => Number(b.similarity_score || 0) - Number(a.similarity_score || 0));
-    const prunedVisual = pruneOutlierVisualMatches(visual, context);
+    const prunedVisual = pruneOutlierVisualMatches(visual, {
+        ...context,
+        topSeedCategoryIds: context.topSeedCategoryIds?.size
+            ? context.topSeedCategoryIds
+            : new Set(collectCategoryIds(visual[0])),
+        topSeedTokens: context.topSeedTokens?.size
+            ? context.topSeedTokens
+            : new Set(tokenize(visual[0]?.name || "").filter((w) => !STOP_WORDS.has(w))),
+    });
     supplemental.sort((a, b) => b.relevance - a.relevance);
 
     const maxSupplement = context.seeds?.length
-        ? maxNonVisualSupplementCount(pageLimit)
+        ? Math.min(maxNonVisualSupplementCount(pageLimit), 3)
         : pageLimit;
 
     return [...prunedVisual, ...supplemental.slice(0, maxSupplement).map((row) => row.item)].slice(0, pageLimit);
@@ -213,7 +279,7 @@ const filterSupplementalItems = (items = [], context = {}) => {
 };
 
 const minVisualSimilarity = () => Math.min(
-    Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_MIN_SIMILARITY || 0.38), 0),
+    Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_MIN_SIMILARITY || 0.48), 0),
     1
 );
 
@@ -285,7 +351,7 @@ const expandFromVisualSeeds = async ({
         const topSeed = visualSeeds[0];
         if (topSeed?._id) {
             try {
-                const rows = await getSimilarProducts(topSeed._id, { limit: 4 });
+                const rows = await getSimilarProducts(topSeed._id, { limit: 3 });
                 rows.forEach((row) => {
                     const key = String(row?._id || row?.offerId || "");
                     if (!key || seenSimilar.has(key)) return;
@@ -303,7 +369,7 @@ const expandFromVisualSeeds = async ({
         try {
             const catalogResult = await getSearchCatalogForImage()({
                 search: vision.searchPhrase,
-                limit: Math.min(pageLimit, 12),
+                limit: Math.min(pageLimit, 8),
                 skip,
                 category,
                 fieldName,
@@ -340,7 +406,11 @@ const buildImageSearchListMeta = (result = {}, extras = {}) => {
     const topPct = Number(vision.topVisualMatchScore || 0) > 0
         ? Math.round(Number(vision.topVisualMatchScore) * 100)
         : null;
-    const isVisual = mode === "visual" || mode === "visual+keyword" || vision.provider === "visual-match";
+    const isVisual = mode === "visual"
+        || mode === "visual+keyword"
+        || mode === "visual-strong"
+        || mode === "feature+visual"
+        || vision.provider === "visual-match";
 
     const label = isVisual && topName
         ? topName

@@ -232,7 +232,7 @@ const mapProductsByOfferOrder = async (offerIds = []) => {
 
 const VISUAL_MATCH_SCORE_BASE = Number(process.env.LOCAL_IMAGE_SEARCH_SCORE_BASE || 8);
 const VISUAL_MATCH_MIN_SIMILARITY = Math.min(
-    Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_MIN_SIMILARITY || 0.38), 0),
+    Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_MIN_SIMILARITY || 0.48), 0),
     1
 );
 
