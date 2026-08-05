@@ -153,32 +153,37 @@ const transformAndInsertProductSKUs = async (vendor, productSkuInfos) => {
 
     const skuPromises = productSkuInfos.map(async (skuInfo) => {
         const productVariationAttributes = [];
+        const skuAttributes = Array.isArray(skuInfo?.skuAttributes) ? skuInfo.skuAttributes : [];
 
-        const attrPromises = skuInfo.skuAttributes.map(async (attr) => {
-            let attribute = attributes[attr.attributeId] ||
+        const attrPromises = skuAttributes.map(async (attr) => {
+            if (!attr?.attributeId && !attr?.attributeNameTrans) return;
+
+            const attributeKey = attr.attributeId || attr.attributeNameTrans;
+            let attribute = attributes[attributeKey] ||
                 await _model.Attribute.findOneAndUpdate(
-                    { externalAttrId: attr.attributeId, name: attr.attributeNameTrans, vendor },
-                    { externalAttrId: attr.attributeId, storeType: STORE_TYPE_ID, vendor, name: attr.attributeNameTrans, status: "active" },
+                    { externalAttrId: attributeKey, name: attr.attributeNameTrans || String(attributeKey), vendor },
+                    { externalAttrId: attributeKey, storeType: STORE_TYPE_ID, vendor, name: attr.attributeNameTrans || String(attributeKey), status: "active" },
                     { new: true, upsert: true }
                 );
 
-            attributes[attr.attributeId] = attribute;
+            attributes[attributeKey] = attribute;
 
+            const termName = attr.valueTrans || attr.value || "Default";
             const term = await _model.AttributeTerm.findOneAndUpdate(
-                { attribute: attribute._id, name: attr.valueTrans },
-                { vendor, image: attr.skuImageUrl, attribute: attribute._id, name: attr.valueTrans, status: "active" },
+                { attribute: attribute._id, name: termName },
+                { vendor, image: attr.skuImageUrl, attribute: attribute._id, name: termName, status: "active" },
                 { new: true, upsert: true }
             );
 
             if (!variationAttributes[attribute._id]) {
-                variationAttributes[attribute._id] = { _id: attribute._id, name: attr.attributeNameTrans, terms: [] };
+                variationAttributes[attribute._id] = { _id: attribute._id, name: attr.attributeNameTrans || attribute.name, terms: [] };
             }
 
             if (!variationAttributes[attribute._id].terms.find(termItem => termItem._id.equals(term._id))) {
-                variationAttributes[attribute._id].terms.push({ _id: term._id, name: attr.valueTrans, image: attr.skuImageUrl });
+                variationAttributes[attribute._id].terms.push({ _id: term._id, name: termName, image: attr.skuImageUrl });
             }
 
-            productVariationAttributes.push({ _id: term._id, name: attr.valueTrans });
+            productVariationAttributes.push({ _id: term._id, name: termName });
         });
 
         await Promise.all(attrPromises);

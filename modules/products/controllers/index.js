@@ -246,6 +246,19 @@ const syncSupplierProductNow = async (product) => {
                 await updateProductDetails(product, productDetails);
                 return true;
             }
+            // Offer is live but has no SKUs — keep it buyable as a simple product.
+            if (productDetails?.status === "published" && skuCount === 0) {
+                await _model.Product.findOneAndUpdate(
+                    { _id: productId },
+                    {
+                        type: "simple",
+                        variations: [],
+                        attributes: [],
+                        last_updated: new Date(),
+                    }
+                );
+                return true;
+            }
         } catch (error) {
             console.warn(`Supplier product sync failed for offerId=${offerId}:`, error.message);
         }

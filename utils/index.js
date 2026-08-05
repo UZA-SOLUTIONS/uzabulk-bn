@@ -150,6 +150,9 @@ const { attachProductMoqFields } = require('../modules/products/helper/moq');
 const { attachProductSupplierFields } = require('../modules/products/helper/supplier');
 
 const processVariations = (item) => {
+    if (Array.isArray(item?.variations)) {
+        item.variations = item.variations.filter(Boolean);
+    }
     if (item?.type === 'variable' && Array.isArray(item.variations)) {
         _.forEach(item.variations, element => {
             let variation_id = _.map(element.attributes, attribute => attribute._id.toString());
@@ -157,6 +160,10 @@ const processVariations = (item) => {
             element.variation_id = variation_id.join('~');
             element.variation_title = variation_title.join('/');
         });
+        // Broken catalog rows: marked variable but SKUs missing after populate.
+        if (!item.variations.length) {
+            item.type = 'simple';
+        }
     }
     return attachProductSupplierFields(attachProductMoqFields(item));
 }

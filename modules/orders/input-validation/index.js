@@ -6,6 +6,7 @@ const helper = require("../helper/index");
 const { priceExchange } = require('../../../helpers/helper');
 const { calculateFreightAndTax } = require("../services/alibaba");
 const ProductService = require("../services/product");
+const { resolveCartVariation } = require("../../carts/helper/resolveCartVariation");
 
 let generateLineItems = async (product, items) => {
 
@@ -18,18 +19,18 @@ let generateLineItems = async (product, items) => {
             productImage: product.featured_image?.link,
             quantity: item.quantity,
         };
-        if (product.type === "simple") {
+        const resolved = await resolveCartVariation(product, item);
+        const workingProduct = resolved.product || product;
+
+        if (workingProduct.type === "simple" || resolved.treatedAsSimple) {
             // Calculate price based on quantity and price tiers
-            obj.price = item.price;
+            obj.price = item.price ?? workingProduct.price;
 
         } else {
-            if (!item.variation_id) {
-                throw "VARIATION_IS_REQUIRED";
-            };
-            const getVariation = await productVariation.getproductVariationById(item.variation_id);
+            const getVariation = resolved.variation;
             if (!getVariation) {
-                throw "PRODUCT_VARIATION_IS_INVALID";
-            };
+                throw "VARIATION_IS_REQUIRED";
+            }
 
             if (getVariation.manage_stock && getVariation.stock_quantity < item.quantity) {
                 throw "OUT_OF_STOCK";
@@ -38,7 +39,20 @@ let generateLineItems = async (product, items) => {
                 throw "OUT_OF_STOCK";
             }
 
-            let attrArray = await validateAttributes(item.attributes);
+            let attrArray = [];
+            try {
+                attrArray = Array.isArray(item.attributes) && item.attributes.length
+                    ? await validateAttributes(item.attributes)
+                    : [];
+            } catch (_error) {
+                attrArray = (getVariation.attributes || []).map((term) => ({
+                    attrId: term?.attribute || null,
+                    attrTermId: term?._id || null,
+                    attrName: "",
+                    attrValue: term?.name || "",
+                    imageUrl: term?.image || "",
+                })).filter((row) => row.attrTermId);
+            }
 
             obj.price = getVariation.price;
             obj.variation_id = getVariation._id;

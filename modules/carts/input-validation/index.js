@@ -2,6 +2,22 @@ const productModel = require('../../../models/productsTable');
 const productVariation = require('../../../models/productVariationTable');
 const attribute = require('../../../models/attributeTable');
 const attributeTerms = require('../../../models/attributeTermsTable');
+const { resolveCartVariation } = require('../helper/resolveCartVariation');
+
+const variationLabel = (variation) => {
+    const names = (variation?.attributes || []).map((a) => a?.name).filter(Boolean);
+    return names.length ? names.join(" / ") : "selected option";
+};
+
+const attributesFromVariation = (variation) => {
+    const attrs = Array.isArray(variation?.attributes) ? variation.attributes : [];
+    return attrs
+        .map((term) => ({
+            attrId: term?.attribute || term?.attrId || null,
+            attrTermId: term?._id || term?.attrTermId || null,
+        }))
+        .filter((row) => row.attrTermId);
+};
 
 let generateLineItems = async (product, items) => {
 
@@ -14,34 +30,53 @@ let generateLineItems = async (product, items) => {
             productImage: product.featured_image?.link,
             quantity: item.quantity,
         };
-        if (product.type === "simple") {
-            // Calculate price based on quantity and price tiers
-            obj.price = product.price;
 
-            if ((!product.manage_stock && product.stock_status === "outofstock") || (product.manage_stock && product.stock_quantity < 0)) {
+        const resolved = await resolveCartVariation(product, item);
+        const workingProduct = resolved.product || product;
+
+        if (workingProduct.type === "simple" || resolved.treatedAsSimple) {
+            // Calculate price based on quantity and price tiers
+            obj.price = workingProduct.price;
+
+            if ((!workingProduct.manage_stock && workingProduct.stock_status === "outofstock") || (workingProduct.manage_stock && workingProduct.stock_quantity < 0)) {
                 throw "The product is out of stock.";
             }
-            else if (product.manage_stock && product.stock_quantity < item.quantity) {
-                throw "The product has only " + product.stock_quantity + " items(s) left.";
+            else if (workingProduct.manage_stock && workingProduct.stock_quantity < item.quantity) {
+                throw "The product has only " + workingProduct.stock_quantity + " items(s) left.";
             }
 
         } else {
-            if (!item.variation_id) {
-                throw "VARIATION_IS_REQUIRED";
-            };
-            const getVariation = await productVariation.getproductVariationById(item.variation_id);
+            const getVariation = resolved.variation;
             if (!getVariation) {
-                throw "PRODUCT_VARIATION_IS_INVALID";
-            };
+                throw "VARIATION_IS_REQUIRED";
+            }
 
             if ((!getVariation.manage_stock && getVariation.stock_status == "outofstock") || (getVariation.manage_stock && getVariation.stock_quantity < 0)) {
-                throw "The product \"" + (getVariation.attributes.map((a) => a.name)).join(" / ") + "\" is out of stock.";
+                throw "The product \"" + variationLabel(getVariation) + "\" is out of stock.";
             }
             else if (getVariation.manage_stock && getVariation.stock_quantity < item.quantity) {
-                throw "The product \"" + (getVariation.attributes.map((a) => a.name)).join(" / ") + "\" has only " + getVariation.stock_quantity + " items(s) left.";
+                throw "The product \"" + variationLabel(getVariation) + "\" has only " + getVariation.stock_quantity + " items(s) left.";
             }
 
-            let attrArray = await validateAttributes(item.attributes);
+            const incomingAttributes = Array.isArray(item.attributes) && item.attributes.length
+                ? item.attributes
+                : attributesFromVariation(getVariation);
+
+            let attrArray = [];
+            try {
+                attrArray = incomingAttributes.length
+                    ? await validateAttributes(incomingAttributes)
+                    : [];
+            } catch (attrError) {
+                // Variation may store term refs without parent attribute ids; still allow cart add.
+                attrArray = (getVariation.attributes || []).map((term) => ({
+                    attrId: term?.attribute || null,
+                    attrTermId: term?._id || null,
+                    attrName: "",
+                    attrValue: term?.name || "",
+                    imageUrl: term?.image || "",
+                })).filter((row) => row.attrTermId);
+            }
 
             obj.price = getVariation.price;
             obj.variation_id = getVariation._id;
