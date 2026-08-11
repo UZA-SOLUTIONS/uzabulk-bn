@@ -3,6 +3,7 @@ const {
     expandCategoryFilterIds,
     buildEsCategoryFilter,
 } = require("./categoryFilterHelper");
+const { looksLikeOfferId, normalizeOfferIdCandidates } = require("../helper/offerId");
 
 const normalizeSearchQuery = (raw = "") =>
     String(raw || "").trim().replace(/\s+/g, " ");
@@ -65,6 +66,38 @@ const getSearchClauses = (rawSearch = "") => {
             },
         },
     ];
+
+    // Keyword field: explicit term/prefix beats multi_match for numeric offer IDs.
+    if (looksLikeOfferId(q)) {
+        for (const offerId of normalizeOfferIdCandidates(q)) {
+            clauses.unshift(
+                {
+                    term: {
+                        offerId: {
+                            value: offerId,
+                            boost: 40,
+                        },
+                    },
+                },
+                {
+                    prefix: {
+                        offerId: {
+                            value: offerId,
+                            boost: 28,
+                        },
+                    },
+                }
+            );
+        }
+        clauses.unshift({
+            term: {
+                sku: {
+                    value: q,
+                    boost: 30,
+                },
+            },
+        });
+    }
 
     if (!isShort) {
         clauses.push({

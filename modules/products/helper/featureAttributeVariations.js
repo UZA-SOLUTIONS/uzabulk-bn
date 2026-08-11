@@ -36,9 +36,7 @@ const groupVariationAttributes = (featureAttribute = []) => {
     }
   }
 
-  return [...groups.values()].filter(
-    (group) => group.terms.length > 1 && isVariationAttributeName(group.name)
-  );
+  return [...groups.values()].filter((group) => group.terms.length > 1);
 };
 
 const cartesian = (lists) => {

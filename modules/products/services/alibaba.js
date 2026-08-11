@@ -15,26 +15,43 @@ const asArray = (value) => {
     return [value];
 };
 
-const normalizeSkuInfos = (skuInfos = []) => asArray(skuInfos).map((skuInfo) => {
-    const rawAttributes = skuInfo?.skuAttributes || skuInfo?.attributes || skuInfo?.skuAttributesList || [];
+const normalizeSkuInfos = (skuInfos = [], offerId = "") => asArray(skuInfos).map((skuInfo, index) => {
+    const rawAttributes = skuInfo?.skuAttributes
+        || skuInfo?.attributes
+        || skuInfo?.skuAttributesList
+        || skuInfo?.salePropList
+        || [];
     const skuAttributes = asArray(rawAttributes).map((attr) => ({
-        attributeId: attr?.attributeId || attr?.attributeID || attr?.fid || attr?.name || attr?.attributeName,
+        attributeId: attr?.attributeId || attr?.attributeID || attr?.fid || attr?.name || attr?.attributeName || attr?.attributeNameTrans,
         attributeNameTrans: attr?.attributeNameTrans || attr?.attributeName || attr?.name || "",
-        valueTrans: attr?.valueTrans || attr?.value || attr?.valueName || "",
+        valueTrans: attr?.valueTrans || attr?.value || attr?.valueName || attr?.attributeValue || "",
         skuImageUrl: attr?.skuImageUrl || attr?.imageUrl || attr?.image || "",
-    }));
+    })).filter((attr) => attr.attributeId || attr.attributeNameTrans || attr.valueTrans);
+
+    const skuId = skuInfo?.skuId
+        || skuInfo?.skuID
+        || skuInfo?.specId
+        || skuInfo?.specID
+        || (offerId ? `${offerId}-sku-${index + 1}` : null);
+    const specId = skuInfo?.specId
+        || skuInfo?.specID
+        || skuInfo?.skuId
+        || skuInfo?.skuID
+        || skuId;
+
+    if (!skuId) return null;
 
     return {
-        specId: skuInfo?.specId || skuInfo?.specID || skuInfo?.skuId || skuInfo?.skuID,
-        skuId: skuInfo?.skuId || skuInfo?.skuID || skuInfo?.specId || skuInfo?.specID,
+        specId: String(specId),
+        skuId: String(skuId),
         description: skuInfo?.description || "",
         image: skuInfo?.image || skuInfo?.skuImageUrl || "",
-        sku: skuInfo?.sku || skuInfo?.skuCode || "",
-        consignPrice: skuInfo?.consignPrice || skuInfo?.price || skuInfo?.salePrice,
-        amountOnSale: skuInfo?.amountOnSale || skuInfo?.stock || skuInfo?.quantity || 0,
+        sku: skuInfo?.sku || skuInfo?.skuCode || String(skuId),
+        consignPrice: skuInfo?.consignPrice || skuInfo?.price || skuInfo?.salePrice || skuInfo?.retailPrice || 0,
+        amountOnSale: skuInfo?.amountOnSale || skuInfo?.stock || skuInfo?.quantity || skuInfo?.canBookCount || 0,
         skuAttributes,
     };
-});
+}).filter(Boolean);
 
 const normalizeAlibabaProductInfo = (productInfo, productId) => {
     if (!productInfo || typeof productInfo !== "object") return null;
@@ -73,7 +90,14 @@ const normalizeAlibabaProductInfo = (productInfo, productId) => {
         topCategoryId: productInfo.topCategoryId || productInfo.categoryID || productInfo.categoryId || "",
         secondCategoryId: productInfo.secondCategoryId || "",
         thirdCategoryId: productInfo.thirdCategoryId || "",
-        productSkuInfos: normalizeSkuInfos(productInfo.productSkuInfos || productInfo.skuInfos || productInfo.skuInfoList),
+        productSkuInfos: normalizeSkuInfos(
+            productInfo.productSkuInfos
+            || productInfo.skuInfos
+            || productInfo.skuInfoList
+            || productInfo.productSkuInfoList
+            || productInfo.skuList,
+            productInfo.offerId || productInfo.productID || productInfo.productId || productId
+        ),
         subjectTrans: productInfo.subjectTrans || productInfo.subject || productInfo.title || productInfo.name || "",
         offerId: productInfo.offerId || productInfo.productID || productInfo.productId || productId,
         description: productInfo.description || productInfo.detail || productInfo.productDescription || "",

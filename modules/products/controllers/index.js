@@ -195,6 +195,7 @@ const filterItemsBySearchTokens = (items = [], search = "") => {
             [
                 item?.name,
                 item?.sku,
+                item?.offerId,
                 item?.slug,
                 item?.short_description,
                 item?.description,
@@ -246,8 +247,19 @@ const syncSupplierProductNow = async (product) => {
                 await updateProductDetails(product, productDetails);
                 return true;
             }
-            // Offer is live but has no SKUs — keep it buyable as a simple product.
+            // Offer is live but has no SKUs — try feature attributes, then keep buyable as simple.
             if (productDetails?.status === "published" && skuCount === 0) {
+                await updateProductDetails(product, productDetails);
+                const refreshed = await _model.Product.findById(productId)
+                    .select("variations type featureAttribute")
+                    .lean();
+                if (Array.isArray(refreshed?.variations) && refreshed.variations.length) {
+                    return true;
+                }
+                if (Array.isArray(refreshed?.featureAttribute) && refreshed.featureAttribute.length) {
+                    const rebuilt = await syncVariationsFromFeatureAttribute(refreshed);
+                    if (rebuilt) return true;
+                }
                 await _model.Product.findOneAndUpdate(
                     { _id: productId },
                     {
@@ -286,6 +298,17 @@ const syncSupplierProductInBackground = (product) => {
 
             if (productDetails?.status === "published") {
                 await updateProductDetails(product, productDetails);
+                const refreshed = await _model.Product.findById(productId)
+                    .select("variations featureAttribute price stock_quantity stock_status manage_stock vendor offerId")
+                    .lean();
+                if (
+                    refreshed
+                    && (!Array.isArray(refreshed.variations) || !refreshed.variations.length)
+                    && Array.isArray(refreshed.featureAttribute)
+                    && refreshed.featureAttribute.length
+                ) {
+                    await syncVariationsFromFeatureAttribute(refreshed);
+                }
             }
         })
         .catch((error) => {
@@ -321,15 +344,27 @@ const getMongoListQuery = ({ category, fieldName, fieldValue, search, singleCate
         query[fieldName] = fieldValue;
     }
     if (search && String(search).trim()) {
-        const tokens = String(search)
-            .trim()
+        const rawSearch = String(search).trim();
+        const tokens = rawSearch
             .split(/\s+/)
             .map((token) => escapeRegex(token))
             .filter(Boolean);
         if (tokens.length) {
-            query.$and = tokens.map((token) => ({
+            const nameClauses = tokens.map((token) => ({
                 name: { $regex: new RegExp(token, "i") },
             }));
+            const offerCandidates = /^\d{4,30}$/.test(rawSearch)
+                ? [rawSearch, rawSearch.replace(/^0+(?=\d)/, "")].filter(Boolean)
+                : [];
+            if (offerCandidates.length) {
+                query.$or = [
+                    { $and: nameClauses },
+                    { offerId: { $in: [...new Set(offerCandidates)] } },
+                    { sku: rawSearch },
+                ];
+            } else {
+                query.$and = nameClauses;
+            }
         }
     }
 
@@ -1092,6 +1127,26 @@ module.exports = {
             }
 
             item = processVariations(item);
+
+            // Persist demotion when variable products no longer have usable SKUs.
+            if (
+                req.product?.type === "variable"
+                && item?.type === "simple"
+                && (!Array.isArray(item.variations) || item.variations.length === 0)
+            ) {
+                _model.Product.updateOne(
+                    { _id: productId, type: "variable" },
+                    {
+                        type: "simple",
+                        variations: [],
+                        attributes: [],
+                        last_updated: new Date(),
+                    }
+                ).catch((err) => {
+                    console.warn(`Failed to demote empty-variation product ${productId}:`, err?.message || err);
+                });
+            }
+
             const [enrichedItem, sameCategoryProducts] = await Promise.all([
                 withPromiseTimeout(
                     enrichProductReviewsAndRatings(item),

@@ -14,17 +14,44 @@ const {
     transformPriceRange,
     resolveProductListPrice,
 } = require('./pricing');
+const { syncVariationsFromFeatureAttribute } = require('./featureAttributeVariations');
 const STORE_TYPE_ID = "660e3c271095513081ed2223";
+const DEFAULT_VENDOR_ID = "6625f5426b433d206e538ec2";
+
+const asArray = (value) => {
+    if (Array.isArray(value)) return value;
+    if (value == null) return [];
+    return [value];
+};
 
 const updateProductDetails = async (product, productDetails) => {
     try {
         let productObject = {};
         let supplierIds = {};
-        console.log("Product Processing to fetch latest - ", product.offerId);
+        const existingId = product?._id || null;
+        const offerIdLabel = product?.offerId || productDetails?.offerId;
+        console.log("Product Processing to fetch latest - ", offerIdLabel);
 
         if (productDetails && productDetails.status == "published") {
 
-            const { topCategoryId = "", secondCategoryId, thirdCategoryId, status, productSkuInfos, subject, subjectTrans, offerId, description, productSaleInfo, productImage, soldOut, productAttribute, mainVideo, detailVideo, productShippingInfo } = productDetails;
+            const {
+                topCategoryId = "",
+                secondCategoryId,
+                thirdCategoryId,
+                status,
+                productSkuInfos,
+                subject,
+                subjectTrans,
+                offerId,
+                description,
+                productSaleInfo,
+                productImage,
+                soldOut,
+                productAttribute,
+                mainVideo,
+                detailVideo,
+                productShippingInfo,
+            } = productDetails;
             const price_tiers = transformPriceRange(productSaleInfo?.priceRangeList || []);
             const listPrice = resolveProductListPrice({
                 price_tiers,
@@ -32,11 +59,14 @@ const updateProductDetails = async (product, productDetails) => {
             });
             const min_order_qty = extractMinOrderQty(productDetails);
             supplierIds = extractSupplierIds(productDetails);
+            const offerKey = String(offerId || product?.offerId || "").trim();
+            const vendorId = product?.vendor || DEFAULT_VENDOR_ID;
 
-            const [categories, variations, localRatingStats] = await Promise.all([
+            let variations = await transformAndInsertProductSKUs(vendorId, productSkuInfos, offerKey);
+
+            const [categories, localRatingStats] = await Promise.all([
                 _model.Category.getExternalCategory([topCategoryId, secondCategoryId, thirdCategoryId]),
-                transformAndInsertProductSKUs(product.vendor, productSkuInfos),
-                getLocalReviewRatingStats(product._id)
+                getLocalReviewRatingStats(existingId),
             ]);
             const supplierStats = extractSupplierRatingStats(productDetails);
             const ratingStats = resolveProductRatingStats(localRatingStats, {
@@ -47,32 +77,30 @@ const updateProductDetails = async (product, productDetails) => {
 
             productObject = {
                 status: status === "published" ? "active" : "inactive",
-                categories: categories.map(i => i._id),
+                categories: categories.map((i) => i._id),
                 topCategoryId: categories[0]?._id,
                 secondCategoryId: categories[1]?._id,
                 thirdCategoryId: categories[2]?._id,
                 attributes: variations.attributes,
                 variations: variations.variations,
-
-                // update basic details
-                externalProduct: product._id,
-                offerId: offerId,
-                storeType: "660e3c271095513081ed2223",
-                vendor: "6625f5426b433d206e538ec2",
+                externalProduct: existingId,
+                offerId: offerKey,
+                storeType: STORE_TYPE_ID,
+                vendor: DEFAULT_VENDOR_ID,
                 name: subjectTrans || "",
-                type: productSkuInfos?.length ? "variable" : "simple",
+                type: variations.variations.length ? "variable" : "simple",
                 isFeatured: "no",
                 short_description: "",
                 ...(description ? { description } : {}),
-                sku: "", // Consider adding SKU logic if needed
+                sku: "",
                 price: listPrice,
                 compare_price: 0,
-                manage_stock: Boolean(productSaleInfo.amountOnSale),
+                manage_stock: Boolean(productSaleInfo?.amountOnSale),
                 bestSeller: "yes",
-                stock_quantity: productSaleInfo.amountOnSale,
+                stock_quantity: productSaleInfo?.amountOnSale,
                 pricingType: productSaleInfo?.unitInfo?.transUnit,
                 stock_status: "instock",
-                featured_image: productImage?.images[0],
+                featured_image: productImage?.images?.[0],
                 images: productImage?.images,
                 average_rating: ratingStats.average_rating,
                 rating_count: ratingStats.rating_count,
@@ -85,7 +113,7 @@ const updateProductDetails = async (product, productDetails) => {
                 featureAttribute: productAttribute,
                 productVideos: {
                     main: mainVideo,
-                    detail: detailVideo
+                    detail: detailVideo,
                 },
                 adminSold: true,
                 external: true,
@@ -95,128 +123,204 @@ const updateProductDetails = async (product, productDetails) => {
                 productShippingInfo,
                 last_updated: new Date(),
                 meta_data: [
-                    ...(product.meta_data || []).filter((row) => row?.key !== "source_subject_cn"),
-                    ...((subject || subjectTrans) ? [{
-                        key: "source_subject_cn",
-                        value: String(subject || subjectTrans),
-                    }] : []),
+                    ...(product?.meta_data || []).filter((row) => row?.key !== "source_subject_cn"),
+                    ...((subject || subjectTrans)
+                        ? [{
+                            key: "source_subject_cn",
+                            value: String(subject || subjectTrans),
+                        }]
+                        : []),
                 ],
             };
 
-        } else productObject = { deleted_at: new Date(), status: "active", last_updated: new Date() };
+        } else {
+            productObject = { deleted_at: new Date(), status: "active", last_updated: new Date() };
+        }
 
-        const updateProduct = await _model.Product.findOneAndUpdate({ _id: product._id }, productObject, { new: true });
+        let updateProduct;
+        if (existingId) {
+            updateProduct = await _model.Product.findOneAndUpdate(
+                { _id: existingId },
+                productObject,
+                { new: true }
+            );
+        } else {
+            updateProduct = (await _model.Product.insertMany([productObject]))[0];
+        }
+
+        if (!updateProduct) {
+            console.error(`Product save failed for offerId=${offerIdLabel}`);
+            return null;
+        }
+
+        // If SKUs were empty, rebuild selectable options from feature attributes.
+        if (
+            (!Array.isArray(updateProduct.variations) || !updateProduct.variations.length)
+            && asArray(productDetails?.productAttribute).length
+        ) {
+            const rebuilt = await syncVariationsFromFeatureAttribute(
+                updateProduct.toObject?.() || updateProduct
+            );
+            if (rebuilt) {
+                updateProduct = await _model.Product.findById(updateProduct._id);
+            }
+        }
+
         await bulkInsert([updateProduct]);
-        console.log("Product Updated Completed");
+        console.log(
+            `Product Updated Completed offerId=${updateProduct.offerId} type=${updateProduct.type} variations=${Array.isArray(updateProduct.variations) ? updateProduct.variations.length : 0}`
+        );
 
         if (supplierIds.sellerOpenId || supplierIds.supplier_id || supplierIds.seller_id) {
             verifyFromProductDetails(productDetails, supplierIds).catch((verifyErr) => {
                 console.warn(
-                    `Supplier verification skipped for offerId=${offerId}:`,
+                    `Supplier verification skipped for offerId=${offerIdLabel}:`,
                     verifyErr?.message || verifyErr
                 );
             });
         }
 
-        autoEnrichProductListing(product._id)
+        autoEnrichProductListing(updateProduct._id)
             .then((result) => {
                 if (result?.skipped) {
-                    return ensureProductEmbedding(product._id);
+                    return ensureProductEmbedding(updateProduct._id);
                 }
                 return null;
             })
             .catch((aiErr) => {
                 console.warn(
-                    `Auto smart listing failed for offerId=${offerId}:`,
+                    `Auto smart listing failed for offerId=${offerIdLabel}:`,
                     aiErr?.message || aiErr
                 );
-                return ensureProductEmbedding(product._id);
+                return ensureProductEmbedding(updateProduct._id);
             })
             .catch((embedErr) => {
                 console.warn(
-                    `Product embedding skipped for offerId=${offerId}:`,
+                    `Product embedding skipped for offerId=${offerIdLabel}:`,
                     embedErr?.message || embedErr
                 );
             });
 
-    } catch (error) { console.error(`Error processing product ${product._id}:`, error); };
+        return updateProduct;
+    } catch (error) {
+        console.error(`Error processing product ${product?._id}:`, error);
+        return null;
+    }
 };
 
-const transformAndInsertProductSKUs = async (vendor, productSkuInfos) => {
-    if (!productSkuInfos) {
+const transformAndInsertProductSKUs = async (vendor, productSkuInfos, offerId = "") => {
+    const skuList = asArray(productSkuInfos);
+    if (!skuList.length) {
         return { variations: [], attributes: [] };
     }
 
     const variationAttributes = {};
     const variationIds = [];
     const attributes = {};
+    const vendorId = vendor || DEFAULT_VENDOR_ID;
 
-    const skuPromises = productSkuInfos.map(async (skuInfo) => {
+    for (let index = 0; index < skuList.length; index += 1) {
+        const skuInfo = skuList[index] || {};
         const productVariationAttributes = [];
-        const skuAttributes = Array.isArray(skuInfo?.skuAttributes) ? skuInfo.skuAttributes : [];
+        const skuAttributes = asArray(
+            skuInfo?.skuAttributes || skuInfo?.attributes || skuInfo?.skuAttributesList
+        );
 
-        const attrPromises = skuAttributes.map(async (attr) => {
-            if (!attr?.attributeId && !attr?.attributeNameTrans) return;
+        for (const attr of skuAttributes) {
+            if (!attr?.attributeId && !attr?.attributeNameTrans && !attr?.attributeName && !attr?.name) {
+                continue;
+            }
 
-            const attributeKey = attr.attributeId || attr.attributeNameTrans;
+            const attributeKey = attr.attributeId || attr.attributeNameTrans || attr.attributeName || attr.name;
+            const attributeName = attr.attributeNameTrans || attr.attributeName || attr.name || String(attributeKey);
             let attribute = attributes[attributeKey] ||
                 await _model.Attribute.findOneAndUpdate(
-                    { externalAttrId: attributeKey, name: attr.attributeNameTrans || String(attributeKey), vendor },
-                    { externalAttrId: attributeKey, storeType: STORE_TYPE_ID, vendor, name: attr.attributeNameTrans || String(attributeKey), status: "active" },
+                    { externalAttrId: attributeKey, name: attributeName, vendor: vendorId },
+                    {
+                        externalAttrId: attributeKey,
+                        storeType: STORE_TYPE_ID,
+                        vendor: vendorId,
+                        name: attributeName,
+                        status: "active",
+                    },
                     { new: true, upsert: true }
                 );
 
             attributes[attributeKey] = attribute;
 
-            const termName = attr.valueTrans || attr.value || "Default";
+            const termName = attr.valueTrans || attr.value || attr.valueName || "Default";
             const term = await _model.AttributeTerm.findOneAndUpdate(
                 { attribute: attribute._id, name: termName },
-                { vendor, image: attr.skuImageUrl, attribute: attribute._id, name: termName, status: "active" },
+                {
+                    vendor: vendorId,
+                    image: attr.skuImageUrl || attr.imageUrl || "",
+                    attribute: attribute._id,
+                    name: termName,
+                    status: "active",
+                },
                 { new: true, upsert: true }
             );
 
             if (!variationAttributes[attribute._id]) {
-                variationAttributes[attribute._id] = { _id: attribute._id, name: attr.attributeNameTrans || attribute.name, terms: [] };
+                variationAttributes[attribute._id] = {
+                    _id: attribute._id,
+                    name: attributeName,
+                    terms: [],
+                };
             }
 
-            if (!variationAttributes[attribute._id].terms.find(termItem => termItem._id.equals(term._id))) {
-                variationAttributes[attribute._id].terms.push({ _id: term._id, name: termName, image: attr.skuImageUrl });
+            if (!variationAttributes[attribute._id].terms.find((termItem) => termItem._id.equals(term._id))) {
+                variationAttributes[attribute._id].terms.push({
+                    _id: term._id,
+                    name: termName,
+                    image: attr.skuImageUrl || attr.imageUrl || "",
+                });
             }
 
             productVariationAttributes.push({ _id: term._id, name: termName });
-        });
+        }
 
-        await Promise.all(attrPromises);
+        const skuId = String(
+            skuInfo.skuId ||
+            skuInfo.skuID ||
+            skuInfo.specId ||
+            skuInfo.specID ||
+            `${offerId || "sku"}-${index + 1}`
+        );
+        const specId = String(
+            skuInfo.specId || skuInfo.specID || skuInfo.skuId || skuInfo.skuID || skuId
+        );
 
         const productVariation = {
-            specId: skuInfo.specId,
-            skuId: skuInfo.skuId,
-            description: skuInfo.description,
-            image: skuInfo.image,
-            sku: skuInfo.sku,
-            price: skuInfo.consignPrice,
-            compare_price: skuInfo.consignPrice,
+            specId,
+            skuId,
+            description: skuInfo.description || "",
+            image: skuInfo.image || skuInfo.skuImageUrl || "",
+            sku: skuInfo.sku || skuInfo.skuCode || skuId,
+            price: Number(skuInfo.consignPrice || skuInfo.price || skuInfo.salePrice || 0) || 0,
+            compare_price: Number(skuInfo.consignPrice || skuInfo.price || skuInfo.salePrice || 0) || 0,
             manage_stock: true,
-            stock_quantity: skuInfo.amountOnSale,
-            stock_status: skuInfo.amountOnSale ? "instock" : "outofstock",
-            attributes: productVariationAttributes
+            stock_quantity: Number(skuInfo.amountOnSale || skuInfo.stock || skuInfo.quantity || 0) || 0,
+            stock_status:
+                Number(skuInfo.amountOnSale || skuInfo.stock || skuInfo.quantity || 0) > 0
+                    ? "instock"
+                    : "outofstock",
+            attributes: productVariationAttributes,
         };
 
         const newProductVariation = await _model.productVariation.findOneAndUpdate(
-            { skuId: skuInfo.skuId },
+            { skuId },
             productVariation,
             { new: true, upsert: true }
         );
 
         variationIds.push(newProductVariation._id);
-    });
-
-    await Promise.all(skuPromises);
+    }
 
     return {
         variations: variationIds,
-        attributes: Object.values(variationAttributes)
+        attributes: Object.values(variationAttributes),
     };
-}
+};
 
 module.exports = { updateProductDetails };

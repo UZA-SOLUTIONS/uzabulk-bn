@@ -4,6 +4,7 @@ const { expandSearchQuery, basicQueryCleanup, normalizeTerm } = require("../../a
 const { getElasticsearchAvailability } = require("../../../elasticsearch/availability");
 const { withMongoMaxTime } = require("../../../utils/mongoQueryOptions");
 const { applyIntelligentSearchLayer } = require("./intelligentTextSearchService");
+const { looksLikeOfferId, normalizeOfferIdCandidates } = require("../helper/offerId");
 
 const SEARCH_TIMEOUT_MS = Math.min(
     Math.max(Number(process.env.SEARCH_SOURCE_TIMEOUT_MS || 8000), 3000),
@@ -522,13 +523,34 @@ const searchCatalogByElasticsearchNeedles = async ({
     };
 };
 
+const queryMongoByOfferId = async (rawOfferId, { limit = 32, category } = {}) => {
+    const candidates = normalizeOfferIdCandidates(rawOfferId);
+    if (!candidates.length) return [];
+
+    const query = {
+        status: "active",
+        offerId: { $in: candidates },
+        ...buildMongoCategoryFilter(category),
+    };
+
+    return withMongoMaxTime(Product.find(query)
+        .select(listProjection)
+        .sort({ average_rating: -1, rating_count: -1, sold_count: -1, _id: -1 })
+        .limit(limit))
+        .lean();
+};
+
 const queryMongoByNameNeedle = async (needle, { limit = 32, category } = {}) => {
     const term = escapeRegex(normalizeTerm(needle));
     if (!term) return [];
 
     const query = {
         status: "active",
-        name: { $regex: term, $options: "i" },
+        $or: [
+            { name: { $regex: term, $options: "i" } },
+            { sku: { $regex: `^${term}$`, $options: "i" } },
+            { offerId: term },
+        ],
         ...buildMongoCategoryFilter(category),
     };
 
@@ -575,7 +597,7 @@ const variantMatchesHaystack = (haystack = "", variant = "") => {
 
 const matchesAnyVariant = (item, variants = []) => {
     const haystack = normalizeTerm(
-        [item?.name, item?.short_description, item?.sku, item?.slug].filter(Boolean).join(" ")
+        [item?.name, item?.short_description, item?.sku, item?.slug, item?.offerId].filter(Boolean).join(" ")
     );
     if (!haystack) return false;
     return variants.some((variant) => variant && variantMatchesHaystack(haystack, variant));
@@ -774,6 +796,23 @@ const searchCatalogByText = async ({
     const raw = String(search || "").trim();
     if (!raw) {
         return { items: [], total: 0, searchMeta: { engine: "none" } };
+    }
+
+    // Exact / prefix offer-ID lookup before AI expansion so numeric IDs stay precise.
+    if (looksLikeOfferId(raw)) {
+        const offerItems = await safeQuery(queryMongoByOfferId(raw, { limit, category }));
+        if (offerItems.length) {
+            return {
+                items: offerItems.map(sanitizeSearchItem),
+                total: offerItems.length,
+                searchMeta: {
+                    engine: "mongo_offerId",
+                    originalQuery: raw,
+                    searchQuery: raw,
+                    offerIdSearch: true,
+                },
+            };
+        }
     }
 
     let context = intentContext;
