@@ -8,7 +8,7 @@ const { aggregateUserSignals, loadRegionalDemandCandidates } = require("./signal
 const { buildUserEmbedding } = require("./userEmbeddingService");
 const { scoreCollaborativeCandidates } = require("./collaborativeFilterService");
 const { rankCandidates } = require("./personalizedRankingService");
-const { getSimilarProducts } = require("../../products/services/similarProductsService");
+const { getSimilarProducts, getComplementaryProducts } = require("../../products/services/similarProductsService");
 const { getEmbeddingDiscoveryProducts } = require("../../products/services/aiRecommendationService");
 const { getRotatedProducts } = require("../../products/services/catalogRotationService");
 const { balanceCatalogProducts } = require("../../products/helpers/catalogVisibilityHelper");
@@ -236,6 +236,7 @@ const computeSurface = async (surface, req, {
     contextKey = "",
     cartProductIds = [],
     sourceProductId = null,
+    complementary = false,
     limit,
 } = {}) => {
     const cap = Math.max(1, Math.min(Number(limit) || SURFACE_LIMITS[surface] || 12, 24));
@@ -267,15 +268,17 @@ const computeSurface = async (surface, req, {
     };
 
     if (surface === "similar_products" && sourceProductId) {
-        const similar = await getSimilarProducts(sourceProductId, { limit: cap });
+        const related = complementary
+            ? await getComplementaryProducts(sourceProductId, { limit: cap })
+            : await getSimilarProducts(sourceProductId, { limit: cap });
         await writeCache({
             identityKey,
             surface,
-            contextKey: String(sourceProductId),
-            productIds: similar.map((row) => row._id),
-            meta: { sourceProductId: String(sourceProductId) },
+            contextKey: contextKey || String(sourceProductId),
+            productIds: related.map((row) => row._id),
+            meta: { sourceProductId: String(sourceProductId), complementary: Boolean(complementary) },
         });
-        return similar;
+        return related;
     }
 
     const { candidates, coScores } = await buildCandidatePool(signals, {

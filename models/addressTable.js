@@ -10,10 +10,10 @@ let schema = new mongoose.Schema(
     houseNo: { type: String, default: "" },
     landmark: { type: String, default: "" },
     address: { type: String, default: "" },
-    // addressLocation: {
-    //   type: { type: String, enum: ["Point"], required: true, default: "Point" },
-    //   coordinates: { type: [Number], required: true, default: [] },
-    // },
+    addressLocation: {
+      type: { type: String, enum: ["Point"] },
+      coordinates: { type: [Number] },
+    },
     addressType: {
       type: String,
       enum: ["home", "office", "other"],

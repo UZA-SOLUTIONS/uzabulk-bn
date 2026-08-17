@@ -1336,17 +1336,20 @@ module.exports = {
                     let total = 0;
                     let hasMore = false;
                     let usedElasticsearch = false;
+                    const utcDay = new Date().toISOString().slice(0, 10);
+                    const rotationSeed = `${seedKey}:${utcDay}`;
+                    const seedOffset = getSeedNumber(`${rotationSeed}:offset`) % 96;
 
                     try {
                         const esPayload = unwrapEsSearchResult(
-                            await esProductService.list({ limit, skip })
+                            await esProductService.list({ limit, skip: skip + seedOffset })
                         );
                         if (esPayload.items?.length || esPayload.total > 0) {
                             browseItems = visibleCatalogItems(
                                 await resolveActiveCatalogItems(esPayload.items)
                             );
                             total = esPayload.total;
-                            hasMore = skip + browseItems.length < esPayload.total;
+                            hasMore = skip + seedOffset + browseItems.length < esPayload.total;
                             usedElasticsearch = true;
                         }
                     } catch (esError) {
@@ -1357,7 +1360,7 @@ module.exports = {
                         const pageResult = await getHomeBrowseProductPage({
                             limit,
                             page: catalogPage,
-                            seedKey,
+                            seedKey: rotationSeed,
                         });
                         browseItems = visibleCatalogItems(pageResult.items);
                         total = pageResult.total;

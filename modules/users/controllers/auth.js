@@ -88,7 +88,8 @@ exports.verifyMobileNumber = async (req, res) => {
 
     let userExist = await UserServices.mobileNumberExist(
       data.mobileNumber,
-      data.countryCode
+      data.countryCode,
+      { excludeUserId: req.user?._id }
     );
 
     if (userExist) return res.error("MOBILE_NUMBER_ALREADY_EXIST");
@@ -125,6 +126,14 @@ exports.register = async (req, res) => {
 
     // Verify email OTP only (mobile OTP optional for signup).
     await UserServices.emailOtp(data.email, data.emailOtp);
+
+    const providedName = String(data.name || "").trim();
+    if (providedName) {
+      data.name = providedName;
+    } else {
+      const localPart = String(data.email).split("@")[0] || "";
+      data.name = localPart.replace(/[._+-]+/g, " ").trim() || localPart;
+    }
 
     data.password = await utils.hashPassword(data.password);
     data.status = "active";

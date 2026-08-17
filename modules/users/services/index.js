@@ -64,13 +64,17 @@ exports.emailExist = async function (email) {
 };
 
 // Mobile no exists or not
-exports.mobileNumberExist = async function (mobileNumber, countryCode) {
-  const exists = await UserModel.findOne({
+exports.mobileNumberExist = async function (mobileNumber, countryCode, { excludeUserId } = {}) {
+  const query = {
     mobileNumber: mobileNumber,
     countryCode: countryCode,
     role: { $in: AUTH_ROLES },
     status: { $nin: ["archived"] },
-  }).exec();
+  };
+  if (excludeUserId) {
+    query._id = { $ne: excludeUserId };
+  }
+  const exists = await UserModel.findOne(query).exec();
 
   return exists !== null;
 };

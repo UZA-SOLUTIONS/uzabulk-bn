@@ -113,6 +113,92 @@ const getSimilarProducts = async (productId, {
     return results;
 };
 
+const categoryKeySet = (product) => {
+    const keys = new Set();
+    (product?.categories || []).forEach((entry) => {
+        const id = String(entry?._id || entry || "").trim();
+        if (id) keys.add(id);
+    });
+    if (product?.topCategoryId) keys.add(String(product.topCategoryId));
+    return keys;
+};
+
+const sharesCategory = (product, sourceKeys) => {
+    if (!sourceKeys?.size) return false;
+    for (const id of categoryKeySet(product)) {
+        if (sourceKeys.has(id)) return true;
+    }
+    return false;
+};
+
+/**
+ * Complementary products: high embedding affinity but a different category
+ * (accessories / frequently paired), not same-category substitutes.
+ */
+const getComplementaryProducts = async (productId, { limit = 8 } = {}) => {
+    const cap = Math.max(1, Math.min(Number(limit) || 8, 24));
+    if (!isMongoConnected()) return [];
+
+    const source = await Product.findById(productId)
+        .select({
+            ...productListProjection,
+            embedding: 1,
+            status: 1,
+        })
+        .lean();
+
+    if (!source || source.status !== "active") return [];
+
+    const sourceKeys = categoryKeySet(source);
+    let queryVector = source.embedding;
+    if (!Array.isArray(queryVector) || !queryVector.length) {
+        if (isDashscopeConfigured()) {
+            try {
+                queryVector = await ensureProductEmbedding(productId);
+            } catch (error) {
+                console.warn(`Complementary embedding failed for ${productId}:`, error.message);
+            }
+        }
+    }
+
+    const seen = new Set([String(source._id)]);
+    const results = [];
+
+    const pushUnique = (rows = []) => {
+        rows.forEach((row) => {
+            const id = String(row?._id || "");
+            if (!id || seen.has(id) || sharesCategory(row, sourceKeys)) return;
+            seen.add(id);
+            results.push(row);
+        });
+    };
+
+    if (queryVector?.length) {
+        const pool = await searchProductsByVector(queryVector, {
+            excludeId: source._id,
+        }, {
+            limit: Math.max(cap * 4, 24),
+            minScore: 0.08,
+        });
+        pushUnique(pool);
+    }
+
+    if (results.length < cap) {
+        const extra = await Product.find({
+            status: "active",
+            _id: { $ne: source._id },
+        })
+            .select(productListProjection)
+            .populate({ path: "featured_image", select: "link -_id" })
+            .sort({ sold_count: -1, date_created_utc: -1 })
+            .limit(80)
+            .lean();
+        pushUnique(extra);
+    }
+
+    return results.slice(0, cap);
+};
+
 /**
  * Embed buyer-upload image attributes directly (Flow A step 3).
  */
@@ -171,6 +257,7 @@ const backfillProductEmbeddings = async ({ limit = 50, force = false } = {}) => 
 module.exports = {
     ensureProductEmbedding,
     getSimilarProducts,
+    getComplementaryProducts,
     searchByAttributeEmbedding,
     backfillProductEmbeddings,
 };

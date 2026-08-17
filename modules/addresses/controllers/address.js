@@ -1,6 +1,24 @@
 "use strict";
-const utils = require("../../../utils");
 const AddressServices = require("../services/address");
+const { toAddressLocation, attachLatLng, attachLatLngMany, reverseGeocode } = require("../helpers/geo");
+
+const buildAddressPayload = (userId, data) => {
+  const setData = {
+    user: userId,
+    area: data.area,
+    name: data.name,
+    countryCode: data.countryCode,
+    mobileNumber: data.mobileNumber,
+    houseNo: data.houseNo,
+    landmark: data.landmark,
+    address: data.address,
+    addressType: data.addressType,
+    default: data.default,
+  };
+  const location = toAddressLocation(data.lattitude, data.longitude);
+  if (location) setData.addressLocation = location;
+  return setData;
+};
 
 module.exports = {
   view: async (req, res) => {
@@ -13,7 +31,7 @@ module.exports = {
 
       if (!item) return res.error("NO_RECORD_FOUND");
 
-      return res.success("RECORD_FOUND", item);
+      return res.success("RECORD_FOUND", attachLatLng(item));
     } catch (error) {
       console.error(error);
       res.error(error);
@@ -28,7 +46,16 @@ module.exports = {
       const items = await AddressServices.list(query, req.paginationOptions);
       let total = await AddressServices.countData(query);
 
-      return res.success(req.nextPageOptions(items, total));
+      return res.success(req.nextPageOptions(attachLatLngMany(items), total));
+    } catch (error) {
+      console.error(error);
+      res.error(error);
+    }
+  },
+  reverseGeocode: async (req, res) => {
+    try {
+      const result = await reverseGeocode(req.query.lat, req.query.lng);
+      return res.success("RECORD_FOUND", result);
     } catch (error) {
       console.error(error);
       res.error(error);
@@ -36,33 +63,8 @@ module.exports = {
   },
   add: async (req, res) => {
     try {
-      let user = req.user;
-
-      let data = req.body;
-
-      const setData = {
-        user: user._id,
-        area: data.area,
-        name: data.name,
-        countryCode: data.countryCode,
-        mobileNumber: data.mobileNumber,
-        houseNo: data.houseNo,
-        landmark: data.landmark,
-        address: data.address,
-        addressLocation: {
-          type: "Point",
-          coordinates:
-            data.lattitude && data.longitude
-              ? [data.longitude, data.lattitude]
-              : [],
-        },
-        addressType: data.addressType,
-        default: data.default,
-      };
-
-      const address = await AddressServices.create(setData);
-
-      return res.success("ADDRESS_ADDED", address);
+      const address = await AddressServices.create(buildAddressPayload(req.user._id, req.body));
+      return res.success("ADDRESS_ADDED", attachLatLng(address));
     } catch (error) {
       console.error(error);
       res.error(error);
@@ -86,31 +88,9 @@ module.exports = {
         return res.error("NO_RECORD_FOUND");
       }
 
-      let data = req.body;
+      const address = await AddressServices.update({ _id }, buildAddressPayload(user._id, req.body));
 
-      const setData = {
-        user: user._id,
-        area: data.area,
-        name: data.name,
-        countryCode: data.countryCode,
-        mobileNumber: data.mobileNumber,
-        houseNo: data.houseNo,
-        landmark: data.landmark,
-        address: data.address,
-        addressLocation: {
-          type: "Point",
-          coordinates:
-            data.lattitude && data.longitude
-              ? [data.longitude, data.lattitude]
-              : [],
-        },
-        addressType: data.addressType,
-        default: data.default,
-      };
-
-      const address = await AddressServices.update({ _id }, setData);
-
-      return res.success("ADDRESS_UPDATED", address);
+      return res.success("ADDRESS_UPDATED", attachLatLng(address));
     } catch (error) {
       console.error(error);
       res.error(error);

@@ -1,21 +1,13 @@
 "use strict";
 const utils = require("../../../utils");
 const UserServices = require("../services");
+const { sanitizeUserForClient } = require("../services/googleAuthService");
 
 exports.profile = async (req, res) => {
   try {
     const user = await UserServices.findOneWithProfileImage({ _id: req.user._id });
     if (!user) return res.error("USER_NOT_FOUND");
-    const plain =
-      typeof user.toObject === "function"
-        ? user.toObject({ virtuals: false })
-        : { ...user };
-    delete plain.password;
-    delete plain.salt;
-    delete plain.OTP;
-    delete plain.OTPexp;
-    delete plain.restToken;
-    delete plain.tokens;
+    const plain = sanitizeUserForClient(user);
     // Ensure Google avatar from a prior Google login is always returned for UI.
     if (!plain.google_picture && user.google_picture) {
       plain.google_picture = user.google_picture;
@@ -43,22 +35,33 @@ exports.updateProfile = async (req, res) => {
   
       let user = await UserServices.update({ _id: req.user._id }, setData);
   
-      return res.success("PROFILE_UPDATED_SUCCESS", user);
+      return res.success("PROFILE_UPDATED_SUCCESS", sanitizeUserForClient(user));
     }
     else if(type === "mobile") {
+      const sameNumber =
+        String(req.user?.mobileNumber || "") === String(mobileNumber || "")
+        && String(req.user?.countryCode || "") === String(countryCode || "");
 
-      await UserServices.mobileOtp(mobileNumber, countryCode, otp);
+      if (!sameNumber) {
+        const taken = await UserServices.mobileNumberExist(
+          mobileNumber,
+          countryCode,
+          { excludeUserId: req.user._id }
+        );
+        if (taken) return res.error("MOBILE_NUMBER_ALREADY_EXIST");
+        await UserServices.mobileOtp(mobileNumber, countryCode, otp);
+      }
 
       let user = await UserServices.update({ _id: req.user._id }, { mobileNumber, countryCode });
 
-      return res.success("MOBILE_NUMBER_UPDATED", user);
+      return res.success("MOBILE_NUMBER_UPDATED", sanitizeUserForClient(user));
     }
     else if(type === "email") {
       await UserServices.emailOtp(email, otp);
 
       let user = await UserServices.update({ _id: req.user._id }, { email });
 
-      return res.success("EMAIL_UPDATED", user);
+      return res.success("EMAIL_UPDATED", sanitizeUserForClient(user));
     }
 
     return res.error("SOMETHING_WENT_WRONG");

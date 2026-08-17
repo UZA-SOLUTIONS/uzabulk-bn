@@ -87,7 +87,7 @@ const respondSurface = async (req, res, surface, options = {}) => {
             result = { items: [], cached: false, fallback: true, surface };
         }
 
-        if (!result.items?.length && !mongoDegraded && !result.timedOut) {
+        if (!result.items?.length && !mongoDegraded && !result.timedOut && !options.complementary) {
             try {
                 const fallback = await withPromiseTimeout(
                     getFastFallback(req, { limit }),
@@ -134,7 +134,9 @@ const respondSurface = async (req, res, surface, options = {}) => {
 };
 
 module.exports = {
-    homepageFeed: (req, res) => respondSurface(req, res, "homepage_feed"),
+    homepageFeed: (req, res) => respondSurface(req, res, "homepage_feed", {
+        contextKey: new Date().toISOString().slice(0, 10),
+    }),
 
     recentlyViewed: async (req, res) => {
         try {
@@ -194,6 +196,19 @@ module.exports = {
             sourceProductId: productId,
             contextKey: String(productId),
             limit: 6,
+        });
+    },
+
+    complementaryProducts: async (req, res) => {
+        const productId = req.params.productId;
+        if (!isValidObjectId(productId)) {
+            return res.error("INVALID_PRODUCT_ID");
+        }
+        return respondSurface(req, res, "similar_products", {
+            sourceProductId: productId,
+            contextKey: `complementary:${productId}`,
+            complementary: true,
+            limit: 8,
         });
     },
 

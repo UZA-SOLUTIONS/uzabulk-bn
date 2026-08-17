@@ -64,6 +64,7 @@ const register = (req, res, next) => {
       password: passwordRequired,
       confirmPassword: confirmPasswordRequired(),
       emailOtp: stringRequired,
+      name: stringAllowNull,
       mobileNumber: Joi.string()
         .pattern(/^\d+$/)
         .min(8)

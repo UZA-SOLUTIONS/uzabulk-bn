@@ -18,9 +18,9 @@ const updateProfile = (req, res, next) => {
       email: validateWhen("type", "email", stringRequired, stringAllowNull),
       otp: validateWhen("type", "profile", stringAllowNull, stringRequired),
       name: validateWhen("type", "profile", stringRequired, stringAllowNull),
-      altMobileNumber: validateWhen("type", "profile", stringRequired, stringAllowNull),
-      altCountryCode: validateWhen("type", "profile", stringRequired, stringAllowNull),
-      hintName: validateWhen("type", "profile", stringRequired, stringAllowNull),
+      altMobileNumber: stringAllowNull,
+      altCountryCode: stringAllowNull,
+      hintName: stringAllowNull,
     });
     if (isValid) {
       return next();

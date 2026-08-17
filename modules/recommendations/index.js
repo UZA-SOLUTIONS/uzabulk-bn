@@ -7,6 +7,7 @@ router.get("/homepage-feed", commonAuthentication, exchangeCurrency, controller.
 router.get("/recently-viewed", authentication, exchangeCurrency, controller.recentlyViewed);
 router.delete("/recently-viewed", authentication, controller.clearRecentlyViewed);
 router.get("/similar-products/:productId", commonAuthentication, exchangeCurrency, controller.similarProducts);
+router.get("/complementary/:productId", commonAuthentication, exchangeCurrency, controller.complementaryProducts);
 router.get("/cross-sell", commonAuthentication, exchangeCurrency, controller.crossSell);
 router.get("/email-digest", commonAuthentication, exchangeCurrency, controller.emailDigest);
 router.get("/supplier-highlights", commonAuthentication, exchangeCurrency, controller.supplierHighlights);
