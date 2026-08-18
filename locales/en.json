@@ -184,5 +184,6 @@
 	},
 	"Invalid login": " 535-5.7.8 Username and Password not accepted. For more information, go to\n535 5.7.8  https://support.google.com/mail/?p=BadCredentials a640c23a62f3a-c1687172f01sm187675966b.24 - gsmtp",
 	"ESCALATED_TO_AGENT": "ESCALATED_TO_AGENT",
-	"timeout of 8000ms exceeded": "timeout of 8000ms exceeded"
+	"timeout of 8000ms exceeded": "timeout of 8000ms exceeded",
+	"Record_DELETED": "Record_DELETED"
 }
