@@ -4,6 +4,9 @@ const { getProductDetail } = require("../../products/services/alibaba");
 const { updateProductDetails } = require("../../products/helper/migration");
 const { syncVariationsFromFeatureAttribute } = require("../../products/helper/featureAttributeVariations");
 
+const isRuntimeSupplierSyncEnabled = () =>
+    String(process.env.RUNTIME_SUPPLIER_SYNC_ENABLED ?? "false").toLowerCase() === "true";
+
 const asIdList = (value) => {
     if (!Array.isArray(value)) return [];
     return value.map((id) => (id && id._id ? id._id : id)).filter(Boolean);
@@ -43,7 +46,7 @@ const syncProductVariations = async (product) => {
     const offerId = product?.offerId;
     if (!productId) return null;
 
-    if (offerId) {
+    if (offerId && isRuntimeSupplierSyncEnabled()) {
         try {
             const productDetails = await getProductDetail(offerId);
             if (productDetails?.status && productDetails.status !== "published") {

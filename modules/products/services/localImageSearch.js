@@ -33,6 +33,31 @@ const LOCAL_IMAGE_SEARCH_MIN_SIMILARITY = Math.min(
     Math.max(Number(process.env.LOCAL_IMAGE_SEARCH_MIN_SIMILARITY || 0.48), 0),
     1
 );
+let pythonRuntimeUnavailable = false;
+let pythonRuntimeProbePromise = null;
+
+const ensurePythonRuntime = async () => {
+    if (pythonRuntimeUnavailable) return false;
+    if (!pythonRuntimeProbePromise) {
+        pythonRuntimeProbePromise = execFileAsync(LOCAL_IMAGE_SEARCH_PYTHON_BIN, ["--version"], {
+            timeout: 2000,
+            windowsHide: true,
+            maxBuffer: 1024 * 64,
+        })
+            .then(() => true)
+            .catch((error) => {
+                pythonRuntimeUnavailable = true;
+                console.warn(
+                    "[image-search] Python runtime unavailable; skipping local image search.",
+                    error?.stderr || error?.message || error
+                );
+                return false;
+            });
+    }
+    return pythonRuntimeProbePromise;
+};
+
+const isLocalPythonRuntimeUnavailable = () => pythonRuntimeUnavailable;
 
 /** When true, keep top-3 below-threshold matches if none pass the floor (legacy). Default off. */
 const isWeakVisualFloorEnabled = () =>
@@ -66,6 +91,18 @@ const execFileAsync = (bin, args, options = {}) =>
         });
     });
 
+const isMissingPythonRuntime = (error) => {
+    const message = String(
+        error?.stderr
+        || error?.stdout
+        || error?.message
+        || ""
+    ).toLowerCase();
+    return message.includes("python was not found")
+        || message.includes("is not recognized as an internal or external command")
+        || message.includes("enoent");
+};
+
 const buildQueryArgs = (imageAddress = "") => {
     const localPath = guessLocalImagePath(imageAddress);
     if (localPath) {
@@ -98,6 +135,7 @@ const filterByMinSimilarity = (results = []) => {
 
 const searchLocalImage = async ({ imageAddress, limit = 32 }) => {
     if (!isLocalImageSearchEnabled() || !hasLocalImageIndex()) return null;
+    if (!(await ensurePythonRuntime())) return null;
     if (!imageAddress || typeof imageAddress !== "string") return null;
 
     const args = [
@@ -114,7 +152,7 @@ const searchLocalImage = async ({ imageAddress, limit = 32 }) => {
 
     try {
         const { stdout } = await execFileAsync(LOCAL_IMAGE_SEARCH_PYTHON_BIN, args, {
-            timeout: 25_000,
+            timeout: 4000,
             windowsHide: true,
             maxBuffer: 8 * 1024 * 1024,
         });
@@ -134,6 +172,11 @@ const searchLocalImage = async ({ imageAddress, limit = 32 }) => {
             total: Number(parsed?.count || offerIds.length || 0),
         };
     } catch (error) {
+        if (isMissingPythonRuntime(error)) {
+            pythonRuntimeUnavailable = true;
+            console.warn("[image-search] Python runtime unavailable; skipping local image search.");
+            return null;
+        }
         console.error("Local image search failed:", error?.stderr || error?.message || error);
         return null;
     }
@@ -141,6 +184,7 @@ const searchLocalImage = async ({ imageAddress, limit = 32 }) => {
 
 const searchLocalImageLive = async ({ imageAddress, candidates = [], limit = 32 }) => {
     if (!isLocalImageSearchEnabled()) return null;
+    if (!(await ensurePythonRuntime())) return null;
     if (!imageAddress || typeof imageAddress !== "string") return null;
 
     const trimmedCandidates = (candidates || [])
@@ -168,7 +212,7 @@ const searchLocalImageLive = async ({ imageAddress, candidates = [], limit = 32 
             tempPath,
         ];
         const { stdout } = await execFileAsync(LOCAL_IMAGE_SEARCH_PYTHON_BIN, args, {
-            timeout: 25_000,
+            timeout: 4000,
             windowsHide: true,
             maxBuffer: 8 * 1024 * 1024,
         });
@@ -188,6 +232,11 @@ const searchLocalImageLive = async ({ imageAddress, candidates = [], limit = 32 
             total: Number(parsed?.count || offerIds.length || 0),
         };
     } catch (error) {
+        if (isMissingPythonRuntime(error)) {
+            pythonRuntimeUnavailable = true;
+            console.warn("[image-search] Python runtime unavailable; skipping local live image search.");
+            return null;
+        }
         console.error("Local live image search failed:", error?.stderr || error?.message || error);
         return null;
     } finally {
@@ -197,6 +246,8 @@ const searchLocalImageLive = async ({ imageAddress, candidates = [], limit = 32 
 
 module.exports = {
     isLocalImageSearchEnabled,
+    isLocalPythonRuntimeUnavailable,
+    ensurePythonRuntime,
     hasLocalImageIndex,
     searchLocalImage,
     searchLocalImageLive,

@@ -55,7 +55,7 @@ const runCatalogSearch = async ({
     extraProducts,
     actions,
     toolResults,
-    limit = 4,
+    limit = 5,
 } = {}) => {
     if (!searchQuery) return 0;
 
@@ -81,7 +81,7 @@ const runCatalogSearch = async ({
         let filtered = filterAssistantSearchProducts(
             searchResult?.items || [],
             searchQuery,
-            { limit: 3 }
+            { limit: 5 }
         );
 
         if (!filtered.length && catalogPhrase !== searchQuery) {
@@ -91,7 +91,7 @@ const runCatalogSearch = async ({
                 skip: 1,
                 skipExternal: true,
             });
-            filtered = filterAssistantSearchProducts(retryResult?.items || [], searchQuery, { limit: 3 });
+            filtered = filterAssistantSearchProducts(retryResult?.items || [], searchQuery, { limit: 5 });
         }
 
         let added = 0;

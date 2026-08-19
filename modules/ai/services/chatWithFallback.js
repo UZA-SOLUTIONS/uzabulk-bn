@@ -10,7 +10,7 @@ const {
 const chatCompletionWithFallback = async (options = {}) => {
     const client = getDashscopeClient();
     const models = options.model
-        ? [options.model]
+        ? [...new Set([options.model, ...getChatModelFallbacks()].filter(Boolean))]
         : getChatModelFallbacks();
 
     let lastError = null;

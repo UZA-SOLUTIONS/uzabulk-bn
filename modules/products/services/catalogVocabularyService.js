@@ -9,6 +9,30 @@ const GENERIC_EXPAND_TOKENS = new Set([
     "cotton", "silicone", "metal", "plastic", "leather", "wood",
     "solid", "basic", "modern", "standard", "smooth", "soft",
 ]);
+const AMBIGUOUS_IDENTITY_TOKENS = new Set([
+    "men", "mens", "man", "women", "womens", "woman",
+    "black", "white", "brown", "blue", "red", "green", "yellow", "pink", "purple",
+    "gold", "silver", "gray", "grey", "leather", "dress", "casual", "formal",
+    "style", "design", "fashion",
+]);
+const FOOTWEAR_ANCHOR_TOKENS = new Set([
+    "shoe", "shoes", "loafer", "loafers", "oxford", "oxfords", "brogue", "brogues",
+    "wingtip", "boot", "boots", "sneaker", "sneakers", "slipper", "slippers",
+    "sandal", "sandals", "footwear", "heel", "heels",
+]);
+
+const resolveIdentityAnchors = (identityTokens = new Set()) => {
+    const anchors = new Set(
+        [...identityTokens].filter((word) =>
+            !GENERIC_EXPAND_TOKENS.has(word) && !AMBIGUOUS_IDENTITY_TOKENS.has(word)
+        )
+    );
+    if ([...anchors].some((word) => FOOTWEAR_ANCHOR_TOKENS.has(word))) {
+        FOOTWEAR_ANCHOR_TOKENS.forEach((word) => anchors.add(word));
+        anchors.delete("dress");
+    }
+    return anchors;
+};
 
 const dedupeNeedles = (needles = [], max = 12, identityHints = {}) => {
     const identityText = [
@@ -22,6 +46,7 @@ const dedupeNeedles = (needles = [], max = 12, identityHints = {}) => {
             .split(" ")
             .filter((word) => word.length > 2 && !GENERIC_EXPAND_TOKENS.has(word))
     );
+    const identityAnchors = resolveIdentityAnchors(identityTokens);
 
     const seen = new Set();
     const kept = [];
@@ -36,10 +61,12 @@ const dedupeNeedles = (needles = [], max = 12, identityHints = {}) => {
         // If we know the product identity, drop expansions that share none of it.
         if (identityTokens.size) {
             const hits = words.filter((word) => identityTokens.has(word)).length;
+            const anchorHits = words.filter((word) => identityAnchors.has(word)).length;
             const isOriginalIdentity = words.some((word) => identityTokens.has(word))
                 || key === normalizeTerm(identityHints.primaryKeyword)
                 || key === normalizeTerm(identityHints.productType)
                 || key === normalizeTerm(identityHints.objectLabel);
+            if (!isOriginalIdentity && identityAnchors.size && anchorHits === 0) return;
             // Allow original needles even if short; reject extras with zero identity overlap.
             if (!isOriginalIdentity && hits === 0 && kept.length >= 3) return;
             if (!isOriginalIdentity && hits === 0 && words.length >= 2) return;

@@ -124,7 +124,7 @@ const mergeProductCards = (primary = [], extra = []) => {
         seen.add(card.id);
         merged.push(card);
     });
-    return merged.slice(0, 4);
+    return merged.slice(0, 5);
 };
 
 const appendAssistantTurn = (session, {
@@ -217,6 +217,8 @@ const handleBuyerChat = async (req, body = {}) => {
         deviceId,
         productId: body.productId,
         orderRef: body.orderId || body.orderRef,
+        pageContext: body.pageContext || null,
+        sessionContext: session.context || {},
     });
 
     const tools = await runAssistantTools({
@@ -260,7 +262,7 @@ const handleBuyerChat = async (req, body = {}) => {
     );
 
     if (mode.allowProductCards && searchQuery) {
-        products = filterAssistantProductCards(products, searchQuery, { limit: 4 });
+        products = filterAssistantProductCards(products, searchQuery, { limit: 5 });
     } else if (mode.mode === "cart" && Number(tools.cartSnapshot?.itemCount || 0) > 0) {
         products = [];
     } else if (["order", "cart"].includes(mode.mode) && !mode.allowProductCards) {
@@ -268,7 +270,7 @@ const handleBuyerChat = async (req, body = {}) => {
     } else if (isAccountIntentQuery(message) && !mode.allowProductCards) {
         products = [];
     } else if (productFinding && searchQuery) {
-        products = filterAssistantProductCards(products, searchQuery, { limit: 4 });
+        products = filterAssistantProductCards(products, searchQuery, { limit: 5 });
     }
 
     const guidanceHint = tools.confirmations?.length ? "" : tools.answerHint;
@@ -464,8 +466,12 @@ const handleBuyerChat = async (req, body = {}) => {
     session.escalated = session.escalated || risk.escalate;
     session.context = {
         ...session.context,
-        lastOrderRef: retrieval.orderRef,
-        lastProductId: body.productId || session.context?.lastProductId,
+        lastOrderRef: retrieval.orderRef || session.context?.lastOrderRef,
+        lastProductId: body.productId
+            || body.pageContext?.productId
+            || products?.[0]?.id
+            || session.context?.lastProductId,
+        lastPageContext: body.pageContext || session.context?.lastPageContext || null,
     };
 
     const payload = buildChatPayload({

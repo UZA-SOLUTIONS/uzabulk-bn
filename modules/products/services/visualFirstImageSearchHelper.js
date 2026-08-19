@@ -8,6 +8,17 @@ const STOP_WORDS = new Set([
     "wholesale", "bulk", "new", "hot", "best", "quality", "high", "factory", "style",
     "set", "pack", "pcs", "piece", "pieces", "lot",
 ]);
+const TYPE_DESCRIPTOR_TOKENS = new Set([
+    "men", "mens", "man", "women", "womens", "woman",
+    "black", "white", "brown", "blue", "red", "green", "yellow", "pink", "purple",
+    "gold", "silver", "gray", "grey", "solid", "design", "pattern", "material",
+    "leather", "casual", "formal",
+]);
+const FOOTWEAR_TOKENS = new Set([
+    "shoe", "shoes", "loafer", "loafers", "oxford", "oxfords", "brogue", "brogues",
+    "wingtip", "heels", "heel", "boot", "boots", "sneaker", "sneakers",
+    "slipper", "slippers", "sandal", "sandals", "footwear",
+]);
 
 const normalizeTerm = (value = "") =>
     String(value || "").toLowerCase().replace(/[^\w\s-]/g, " ").replace(/\s+/g, " ").trim();
@@ -19,7 +30,7 @@ const isStrictImageSearchRelevance = () =>
     String(process.env.IMAGE_SEARCH_STRICT_RELEVANCE ?? "true").toLowerCase() !== "false";
 
 const minRelevanceScore = () =>
-    Math.max(Number(process.env.IMAGE_SEARCH_MIN_RELEVANCE_SCORE || 22), 0);
+    Math.max(Number(process.env.IMAGE_SEARCH_MIN_RELEVANCE_SCORE || 12), 0);
 
 const maxNonVisualSupplementCount = (pageLimit = 24) => Math.min(
     // When we have visual seeds, keep fillers low. When keyword-only, allow more.
@@ -45,14 +56,17 @@ const coreTypeTokensFromVision = (vision = null) => {
     const attrs = vision.attributes || {};
     const tokens = new Set();
     [
-        attrs.product_type,
-        vision.objectLabel,
-        vision.primaryKeyword,
+        attrs.product_type || vision.objectLabel || vision.primaryKeyword,
+        attrs.category,
     ].forEach((value) => {
         tokenize(value)
-            .filter((word) => !STOP_WORDS.has(word) && word.length >= 3)
+            .filter((word) => !STOP_WORDS.has(word) && !TYPE_DESCRIPTOR_TOKENS.has(word) && word.length >= 3)
             .forEach((word) => tokens.add(word));
     });
+    if (tokens.has("shoes")) tokens.add("shoe");
+    if (tokens.has("shoe") || tokens.has("shoes")) {
+        tokens.delete("dress");
+    }
     return tokens;
 };
 
@@ -129,6 +143,12 @@ const hasRequiredTypeOverlap = (item, context = {}) => {
         if (itemTokens.has(token) || name.includes(token)) hits += 1;
     });
 
+    const requiresFootwear = [...required].some((token) => FOOTWEAR_TOKENS.has(token));
+    if (requiresFootwear) {
+        const hasFootwearHit = [...FOOTWEAR_TOKENS].some((token) => itemTokens.has(token) || name.includes(token));
+        if (!hasFootwearHit) return false;
+    }
+
     // At least one core type token must appear (e.g. "cylinder", "propane", "boot").
     return hits >= 1;
 };
@@ -191,8 +211,9 @@ const scoreItemRelevance = (item, context = {}) => {
             if (itemTokens.includes(token)) kwOverlap += 1;
             else if (name.includes(token)) kwOverlap += 0.5;
         });
-        // Require stronger keyword overlap when there is no visual seed.
-        if (kwOverlap < 2 || typeHits < 1) return 0;
+        // Require some keyword overlap when there is no visual seed, but be lenient
+        // so image-only searches still surface keyword results.
+        if (kwOverlap < 1 && typeHits < 1) return 0;
         return Number((kwOverlap * 12 + typeHits * 8).toFixed(4));
     }
 
@@ -267,7 +288,7 @@ const filterImageSearchResults = (items = [], context = {}, { pageLimit = 24 } =
     supplemental.sort((a, b) => b.relevance - a.relevance);
 
     const maxSupplement = context.seeds?.length
-        ? Math.min(maxNonVisualSupplementCount(pageLimit), 3)
+        ? Math.min(maxNonVisualSupplementCount(pageLimit), 6)
         : pageLimit;
 
     return [...prunedVisual, ...supplemental.slice(0, maxSupplement).map((row) => row.item)].slice(0, pageLimit);

@@ -70,7 +70,7 @@ const buildProductChunkFromDoc = (product, score = 1) => {
         moq ? `MOQ: ${moq}` : "",
         tierText ? `Wholesale tiers: ${tierText}` : "",
         product.sku ? `SKU: ${product.sku}` : "",
-        product.offerId ? `1688 offer ID: ${product.offerId}` : "",
+        product.offerId ? `Supplier offer ID: ${product.offerId}` : "",
         product.average_rating != null ? `Rating: ${product.average_rating} (${product.rating_count || 0} reviews)` : "",
         product.sold_count != null ? `Sold count: ${product.sold_count}` : "",
         product.supplier_rating != null ? `Supplier rating: ${product.supplier_rating}` : "",

@@ -7,7 +7,7 @@ module.exports = [
         id: "policy_moq",
         source: "trade_policies",
         title: "Minimum order quantity (MOQ)",
-        text: "Wholesale listings show MOQ per product or variation. Cart quantity must meet or exceed MOQ before checkout. Mixed-SKU MOQ rules follow the supplier listing on 1688.",
+        text: "Wholesale listings show MOQ per product or variation. Cart quantity must meet or exceed MOQ before checkout. Mixed-SKU MOQ rules follow the supplier listing stored in the catalog.",
         tags: ["moq", "minimum", "order", "quantity", "wholesale"],
     },
     {
@@ -27,9 +27,9 @@ module.exports = [
     {
         id: "shipping_1688_consolidation",
         source: "shipping_rules",
-        title: "1688 consolidation shipping",
-        text: "Supplier shipments from 1688 typically route to the UZA consolidation warehouse in China first, then forward internationally. Transit time depends on supplier dispatch, customs, and last-mile delivery to your address.",
-        tags: ["1688", "shipping", "consolidation", "warehouse", "china"],
+        title: "Supplier consolidation shipping",
+        text: "Supplier shipments typically route to the UZA consolidation warehouse in China first, then forward internationally. Transit time depends on supplier dispatch, customs, and last-mile delivery to your address.",
+        tags: ["shipping", "consolidation", "warehouse", "china"],
     },
     {
         id: "shipping_eta",
@@ -42,7 +42,7 @@ module.exports = [
         id: "shipping_tracking",
         source: "logistics_data",
         title: "Tracking your shipment",
-        text: "When a 1688 order is relayed, tracking events sync into your UZA order. Use your order ID in chat or My Orders to see status, carrier name, and waybill number when available.",
+        text: "When a supplier order is relayed, tracking events sync into your UZA order. Use your order ID in chat or My Orders to see status, carrier name, and waybill number when available.",
         tags: ["track", "tracking", "logistics", "carrier", "waybill"],
     },
     {
@@ -53,10 +53,17 @@ module.exports = [
         tags: ["return", "refund", "dispute", "damaged", "wrong item"],
     },
     {
+        id: "policy_guest_cart",
+        source: "trade_policies",
+        title: "Guest cart and sign-in",
+        text: "Guests can browse and add items to a temporary cart tied to their device. Sign in to save the cart across devices, view order history, and checkout with saved addresses.",
+        tags: ["guest", "sign in", "login", "account", "cart", "checkout"],
+    },
+    {
         id: "policy_sourcing",
         source: "trade_policies",
-        title: "Sourcing from 1688 suppliers",
-        text: "UZA Bulk sources from verified 1688 suppliers. Product specs, availability, and lead times come from live catalog sync. Spec changes on the supplier side may update listing attributes after sync.",
-        tags: ["sourcing", "supplier", "1688", "availability", "specs"],
+        title: "Sourcing from suppliers",
+        text: "UZA Bulk sources from verified suppliers. Product specs, availability, and lead times come from catalog sync. Supplier-side spec changes may update listing attributes after sync.",
+        tags: ["sourcing", "supplier", "availability", "specs"],
     },
 ];

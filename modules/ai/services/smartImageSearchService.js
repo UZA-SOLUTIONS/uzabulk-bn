@@ -11,10 +11,6 @@ const {
     searchCatalogByEmbeddingPhrase,
 } = require("./aiImageSearchService");
 const {
-    runAlibabaImageSearch,
-    runEnhanced1688ImageSearch,
-    is1688EnhancedImageSearchEnabled,
-    searchAlibabaCatalogByKeywords,
     runLocalVisualSearch,
 } = require("../../products/helper/imageSearchPipeline");
 const { isLocalImageSearchEnabled } = require("../../products/services/localImageSearch");
@@ -46,24 +42,8 @@ const isFastImageSearchEnabled = () => {
     return flag !== "0" && flag !== "false";
 };
 
-/** 1688 is off by default — image search targets your Mongo catalog. Set IMAGE_SEARCH_INCLUDE_1688=true to enable. */
-const is1688ImageSearchEnabled = () => {
-    const flag = String(process.env.IMAGE_SEARCH_INCLUDE_1688 ?? "false").toLowerCase();
-    return flag === "1" || flag === "true";
-};
-
-const ALIBABA_SEARCH_BUDGET_MS = Math.min(
-    Math.max(Number(process.env.IMAGE_SEARCH_ALIBABA_BUDGET_MS || 18000), 5000),
-    45000
-);
-
-const ALIBABA_ENHANCED_BUDGET_MS = Math.min(
-    Math.max(
-        Number(process.env.IMAGE_SEARCH_1688_ENHANCED_BUDGET_MS || ALIBABA_SEARCH_BUDGET_MS * 2),
-        ALIBABA_SEARCH_BUDGET_MS
-    ),
-    60000
-);
+/** 1688 disabled for image search — results come only from local DB catalog. */
+const is1688ImageSearchEnabled = () => false;
 
 const getSearchCatalogForImage = () =>
     require("../../products/services/catalogSearchService").searchCatalogForImage;
@@ -363,6 +343,24 @@ const FEATURE_SCAN_BUDGET_MS = Math.min(
     35000
 );
 
+const EMBEDDING_SEARCH_BUDGET_MS = Math.min(
+    Math.max(Number(process.env.IMAGE_SEARCH_EMBEDDING_BUDGET_MS || 8000), 2000),
+    15000
+);
+
+const RERANK_BUDGET_MS = Math.min(
+    Math.max(Number(process.env.IMAGE_SEARCH_RERANK_BUDGET_MS || 5000), 2000),
+    12000
+);
+
+const RECOMMENDATIONS_BUDGET_MS = Math.min(
+    Math.max(Number(process.env.IMAGE_SEARCH_RECOMMENDATIONS_BUDGET_MS || 2500), 1000),
+    8000
+);
+
+const minCatalogItemsBeforeSlowPaths = () =>
+    Math.max(Number(process.env.IMAGE_SEARCH_MIN_CATALOG_BEFORE_SLOW || 6), 3);
+
 /** When local visual hits are strong enough, skip slow keyword/embedding fallbacks. */
 const STRONG_VISUAL_SIMILARITY = Math.min(
     Math.max(Number(process.env.IMAGE_SEARCH_STRONG_VISUAL_SIMILARITY || 0.58), 0.45),
@@ -386,8 +384,13 @@ const resolveSmartImageSearch = async ({
     const pageLimit = Math.max(1, Math.min(Number(limit) || 24, 48));
     const minVisual = minVisualResultsForPrimary();
     const minResults = Math.min(3, pageLimit);
+    const useFastPath = Boolean(fast);
     const mongoReady = isMongoConnected();
     const embeddingPrimaryEnabled = String(process.env.IMAGE_SEARCH_EMBEDDING_PRIMARY ?? "true").toLowerCase() !== "false";
+    const visualBudgetMs = useFastPath
+        ? Math.min(VISUAL_SEARCH_BUDGET_MS, 4000)
+        : VISUAL_SEARCH_BUDGET_MS;
+    const hasEnoughCatalogItems = () => items.length >= minCatalogItemsBeforeSlowPaths();
 
     let items = [];
     let provider = "none";
@@ -403,7 +406,7 @@ const resolveSmartImageSearch = async ({
     const visualPromise = imageUrl && isLocalImageSearchEnabled()
         ? withPromiseTimeout(
             runLocalVisualSearch({ imageAddress: imageUrl, pageLimit }),
-            VISUAL_SEARCH_BUDGET_MS,
+            visualBudgetMs,
             null
         )
         : Promise.resolve(null);
@@ -458,22 +461,33 @@ const resolveSmartImageSearch = async ({
         // Refresh relevance context with scanned keywords before filtering supplements.
         relevanceContext = buildRelevanceContext(vision, visualMatches);
 
-        const catalogNeedles = await require("../../products/services/catalogVocabularyService")
-            .expandNeedlesForImageSearch({
-                needles: getBuildImageSearchCatalogNeedles()({
+        const catalogNeedles = await withPromiseTimeout(
+            require("../../products/services/catalogVocabularyService")
+                .expandNeedlesForImageSearch({
+                    needles: getBuildImageSearchCatalogNeedles()({
+                        primaryKeyword,
+                        searchPhrase,
+                        objectLabel: vision?.objectLabel || "",
+                        keywords,
+                        categoryHint: vision?.attributes?.category || "",
+                        attributes: vision?.attributes || {},
+                    }),
                     primaryKeyword,
                     searchPhrase,
                     objectLabel: vision?.objectLabel || "",
                     keywords,
                     categoryHint: vision?.attributes?.category || "",
-                    attributes: vision?.attributes || {},
                 }),
+            useFastPath ? 4000 : 8000,
+            getBuildImageSearchCatalogNeedles()({
                 primaryKeyword,
                 searchPhrase,
                 objectLabel: vision?.objectLabel || "",
                 keywords,
                 categoryHint: vision?.attributes?.category || "",
-            });
+                attributes: vision?.attributes || {},
+            })
+        );
 
         console.log(`[smart-image-search] feature needles: ${getRankImageSearchNeedles()(catalogNeedles).join("|")}`);
 
@@ -511,11 +525,16 @@ const resolveSmartImageSearch = async ({
             embeddingPrimaryEnabled
             && mongoReady
             && (searchPhrase || primaryKeyword)
+            && !(useFastPath && hasEnoughCatalogItems())
         ) {
             try {
-                const embedded = await searchCatalogByEmbeddingPhrase(
-                    searchPhrase || primaryKeyword,
-                    { limit: strongVisualPrimary ? Math.min(pageLimit, 10) : pageLimit }
+                const embedded = await withPromiseTimeout(
+                    searchCatalogByEmbeddingPhrase(
+                        searchPhrase || primaryKeyword,
+                        { limit: strongVisualPrimary ? Math.min(pageLimit, 10) : pageLimit }
+                    ),
+                    EMBEDDING_SEARCH_BUDGET_MS,
+                    []
                 );
                 if (embedded.length) {
                     const taggedEmbed = embedded.map((item) => ({
@@ -533,7 +552,11 @@ const resolveSmartImageSearch = async ({
         }
 
         // Text fallback only when neither visual nor keyword catalog produced enough.
-        if (visualCount === 0 && items.length < pageLimit) {
+        if (
+            visualCount === 0
+            && items.length < pageLimit
+            && !(useFastPath && items.length >= minResults)
+        ) {
             try {
                 const textResult = await getSearchCatalogByText()({
                     search: primaryKeyword || searchPhrase,
@@ -600,77 +623,20 @@ const resolveSmartImageSearch = async ({
         if (searchMode === "keyword") searchMode = "visual";
     }
 
-    // 4) 1688 only when visual/feature search found nothing useful
-    if (imageUrl && is1688EnhancedImageSearchEnabled() && visualCount === 0 && items.length < minResults) {
-        try {
-            const enhanced1688 = await withPromiseTimeout(
-                runEnhanced1688ImageSearch({
-                    imageUrl,
-                    pageLimit,
-                    pageSkip: skip,
-                    country,
-                    imageKeywords: primaryKeyword || vision?.fallbackKeyword || "",
-                }),
-                ALIBABA_ENHANCED_BUDGET_MS,
-                null
-            );
-            if (enhanced1688?.items?.length) {
-                mergeItems(items, normalizeCatalogItems(enhanced1688.items), { scoreBoost: 3 });
-                provider = `${provider}+alibaba-enhanced`;
-            }
-        } catch (error) {
-            console.warn("[smart-image-search] 1688 enhanced failed:", error?.message || error);
-        }
-    }
-
-    if (items.length < minResults && imageUrl && is1688ImageSearchEnabled() && visualCount === 0) {
-        try {
-            const alibabaVisual = await withPromiseTimeout(
-                is1688EnhancedImageSearchEnabled()
-                    ? runEnhanced1688ImageSearch({ imageUrl, pageLimit, pageSkip: skip, country })
-                    : runAlibabaImageSearch({ imageUrl, pageLimit, pageSkip: skip, country }),
-                is1688EnhancedImageSearchEnabled() ? ALIBABA_ENHANCED_BUDGET_MS : ALIBABA_SEARCH_BUDGET_MS,
-                null
-            );
-            if (alibabaVisual?.items?.length) {
-                mergeItems(items, normalizeCatalogItems(alibabaVisual.items), { scoreBoost: 4 });
-                provider = `${provider}+alibaba-visual`;
-            }
-        } catch (error) {
-            console.warn("[smart-image-search] 1688 visual fallback failed:", error?.message || error);
-        }
-
-        if ((primaryKeyword || vision?.fallbackKeyword || vision?.primaryKeyword)) {
-            try {
-                const alibabaItems = await withPromiseTimeout(
-                    searchAlibabaCatalogByKeywords({
-                        primaryKeyword: primaryKeyword || vision.fallbackKeyword || vision.primaryKeyword,
-                        keywords: vision.keywords || [],
-                        pageLimit,
-                        pageSkip: skip,
-                        country,
-                    }),
-                    ALIBABA_SEARCH_BUDGET_MS,
-                    []
-                );
-                if (alibabaItems?.length) {
-                    mergeItems(items, alibabaItems, { scoreBoost: 2 });
-                    provider = `${provider}+alibaba-kw`;
-                }
-            } catch (error) {
-                console.warn("[smart-image-search] alibaba-kw fallback failed:", error?.message || error);
-            }
-        }
-    }
+    // 1688/Alibaba API calls removed — image search relies only on local DB catalog.
 
     relevanceContext = buildRelevanceContext(vision, items.filter(isVisualMatchItem));
     // Fuse visual comparison + scanned keywords before rerank/filter.
     items = fuseVisualAndKeywordMatches(items, vision);
     items = rankItems(items);
     const rerankVision = vision || buildVisionFromVisualMatches(items.filter(isVisualMatchItem));
-    if (items.length && rerankVision) {
+    if (items.length && rerankVision && !(useFastPath && hasEnoughCatalogItems())) {
         try {
-            items = await rerankImageSearchItems(items, rerankVision);
+            items = await withPromiseTimeout(
+                rerankImageSearchItems(items, rerankVision),
+                RERANK_BUDGET_MS,
+                items
+            );
             // Re-apply fusion after metadata/semantic rerank so dual matches stay on top.
             items = fuseVisualAndKeywordMatches(items, rerankVision);
         } catch (rerankErr) {
@@ -679,6 +645,51 @@ const resolveSmartImageSearch = async ({
     }
     items = filterImageSearchResults(items, relevanceContext, { pageLimit });
     items = prioritizeVisualMatches(items).slice(0, pageLimit);
+
+    // Last-resort fallback: if every branch produced nothing, pull trending/recent products
+    // so the user always sees something instead of "no matches".
+    if (!items.length) {
+        try {
+            const fallbackQuery = fallbackSearch
+                || vision?.primaryKeyword
+                || vision?.searchPhrase
+                || vision?.objectLabel
+                || "";
+            if (fallbackQuery) {
+                const lastResort = await getSearchCatalogByText()({
+                    search: fallbackQuery,
+                    limit: pageLimit,
+                    skip,
+                    category,
+                    fieldName,
+                    fieldValue,
+                    fast: true,
+                    skipExternal: true,
+                });
+                items = normalizeCatalogItems(lastResort?.items || []).slice(0, pageLimit);
+                if (items.length) {
+                    provider = `${provider}+last-resort-text`;
+                    searchMode = "keyword";
+                    console.log(`[smart-image-search] last-resort text fallback returned ${items.length} items`);
+                }
+            }
+            if (!items.length && mongoReady) {
+                const recentProducts = await Product.find({ status: "active" })
+                    .sort({ updatedAt: -1 })
+                    .limit(pageLimit)
+                    .select("name price compare_price images featured_image average_rating rating_count short_description categories offerId slug")
+                    .lean();
+                items = normalizeCatalogItems(recentProducts || []);
+                if (items.length) {
+                    provider = `${provider}+last-resort-recent`;
+                    searchMode = "fallback";
+                    console.log(`[smart-image-search] last-resort recent products returned ${items.length} items`);
+                }
+            }
+        } catch (lastResortErr) {
+            console.warn("[smart-image-search] last-resort fallback failed:", lastResortErr?.message || lastResortErr);
+        }
+    }
 
     if (!vision && items.length) {
         vision = buildVisionFromVisualMatches(items.filter(isVisualMatchItem))
@@ -689,6 +700,31 @@ const resolveSmartImageSearch = async ({
         const hasDual = items.some((item) => (item.match_signals || []).includes("visual+keyword"));
         if (hasDual) searchMode = "feature+visual";
         vision.searchMode = searchMode;
+    }
+
+    let recommendations = [];
+    const recommendationQuery = String(
+        fallbackSearch
+        || vision?.searchPhrase
+        || vision?.primaryKeyword
+        || vision?.objectLabel
+        || ""
+    ).trim();
+
+    if (items.length && !useFastPath) {
+        try {
+            recommendations = await withPromiseTimeout(
+                resolveSearchRecommendations(
+                    recommendationQuery,
+                    items.slice(0, Math.min(items.length, 12)),
+                    { limit: Math.min(Math.max(Math.round(pageLimit / 3), 6), 10) }
+                ),
+                RECOMMENDATIONS_BUDGET_MS,
+                []
+            );
+        } catch (recommendErr) {
+            console.warn("[smart-image-search] recommendations failed:", recommendErr?.message || recommendErr);
+        }
     }
 
     if (!items.length) {
@@ -703,12 +739,12 @@ const resolveSmartImageSearch = async ({
 
     return {
         items,
-        recommendations: [],
+        recommendations,
         smartListing: null,
         vision,
         provider,
         searchMode,
-        total: items.length ? Math.max(items.length, 500) : 0,
+        total: items.length,
     };
 };
 

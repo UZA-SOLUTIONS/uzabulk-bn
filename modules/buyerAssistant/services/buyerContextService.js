@@ -73,9 +73,9 @@ const buildRecentOrdersChunk = async (userId, limit = 4) => {
         if (lineSummary) {
             parts.push(lineSummary.replace(/\n/g, " ; "));
         }
-        if (order.alibaba1688?.status) parts.push(`1688 status: ${order.alibaba1688.status}`);
+        if (order.alibaba1688?.status) parts.push(`Supplier sync status: ${order.alibaba1688.status}`);
         if (order.alibaba1688?.primary_order_id) {
-            parts.push(`1688 ID: ${order.alibaba1688.primary_order_id}`);
+            parts.push(`Supplier ref: ${order.alibaba1688.primary_order_id}`);
         }
         if (order.date_created_utc) parts.push(`Placed: ${order.date_created_utc}`);
         return parts.join(" | ");
@@ -90,7 +90,7 @@ const buildRecentOrdersChunk = async (userId, limit = 4) => {
 };
 
 const buildCartChunk = async ({ userId, deviceId }) => {
-    const query = { status: "process", cartType: "default" };
+    const query = { status: "process", cartType: userId ? "default" : "temp" };
     if (userId) query.user = userId;
     else if (deviceId) query.deviceId = deviceId;
     else return null;

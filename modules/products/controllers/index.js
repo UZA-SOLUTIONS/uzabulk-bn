@@ -47,12 +47,19 @@ const { runImageSearchPipeline, searchAlibabaCatalogByKeywords } = require('../h
 const { resolveSmartImageSearch, buildImageSearchListMeta } = require('../../ai/services/smartImageSearchService');
 const { expandSearchQuery } = require('../../ai/services/aiTextSearchService');
 const { isElasticsearchReachable } = require('../../../elasticsearch/availability');
-const { balanceCatalogProducts, filterCatalogProducts } = require('../helpers/catalogVisibilityHelper');
+const {
+    balanceCatalogProducts,
+    filterCatalogProducts,
+    isBlockedCatalogProduct,
+} = require('../helpers/catalogVisibilityHelper');
 const { getSeedNumber } = require('../services/catalogRotationService');
 const {
     resolveCategoryThumbnailsBulk,
     fetchCategoryThumbListItems,
 } = require('../services/categoryThumbnailService');
+
+const isRuntimeSupplierSyncEnabled = () =>
+    String(process.env.RUNTIME_SUPPLIER_SYNC_ENABLED ?? "false").toLowerCase() === "true";
 
 const visibleCatalogItems = (items = [], options = {}) => (
     balanceCatalogProducts(Array.isArray(items) ? items : [], {
@@ -61,7 +68,27 @@ const visibleCatalogItems = (items = [], options = {}) => (
     })
 );
 
+const visibleImageSearchItems = (items = []) => (
+    Array.isArray(items)
+        ? items.filter((item) => !isBlockedCatalogProduct(item))
+        : []
+);
+
 const looksLikeObjectId = (value) => /^[a-fA-F0-9]{24}$/.test(String(value || "").trim());
+
+const mergeUniqueProductRows = (...lists) => {
+    const seen = new Set();
+    const merged = [];
+    lists.forEach((list) => {
+        (Array.isArray(list) ? list : []).forEach((item) => {
+            const key = String(item?._id || item?.id || item?.offerId || "").trim();
+            if (!key || seen.has(key)) return;
+            seen.add(key);
+            merged.push(item);
+        });
+    });
+    return merged;
+};
 
 /** Category id used for "You may also like" — same as home level-1 category filter. */
 const resolveSameCategoryFilterId = (product) => {
@@ -208,6 +235,7 @@ const filterItemsBySearchTokens = (items = [], search = "") => {
 };
 
 const shouldRefreshSupplierProduct = (product) => {
+    if (!isRuntimeSupplierSyncEnabled()) return false;
     if (!product?.offerId) return false;
     if (!product.last_updated) return true;
 
@@ -220,6 +248,7 @@ const shouldRefreshSupplierProduct = (product) => {
 
 /** Supplier listings missing SKU options (sizes, colors, etc.) need an immediate refresh. */
 const needsSupplierVariationSync = (product, item) => {
+    if (!isRuntimeSupplierSyncEnabled()) return false;
     const hasVariations = Array.isArray(item?.variations) && item.variations.length > 0;
     const hasAttributeTerms = Array.isArray(item?.attributes)
         && item.attributes.some((attr) => Array.isArray(attr?.terms) && attr.terms.length > 0);
@@ -235,7 +264,8 @@ const syncSupplierProductNow = async (product) => {
 
     if (offerId) {
         try {
-            const productDetails = await getProductDetail(offerId);
+            const productDetails = await withPromiseTimeout(getProductDetail(offerId), 8000, null);
+            if (!productDetails) return false;
             if (productDetails?.status && productDetails?.status !== "published") {
                 await module.exports.productArchived(productId);
                 return false;
@@ -289,8 +319,9 @@ const syncSupplierProductInBackground = (product) => {
     const offerId = product?.offerId;
     if (!productId || !offerId) return;
 
-    getProductDetail(offerId)
+    withPromiseTimeout(getProductDetail(offerId), 10000, null)
         .then(async (productDetails) => {
+            if (!productDetails) return;
             if (productDetails && productDetails?.status && productDetails?.status !== "published") {
                 await module.exports.productArchived(productId);
                 return;
@@ -1115,12 +1146,20 @@ module.exports = {
             }
 
             if (needsSupplierVariationSync(req.product, item)) {
-                const synced = await syncSupplierProductNow(req.product || { _id: productId });
-                if (synced) {
-                    item = await Product.view(query);
-                    if (!item) {
-                        return res.error("INVALID_PRODUCT_ID");
+                try {
+                    const synced = await withPromiseTimeout(
+                        syncSupplierProductNow(req.product || { _id: productId }),
+                        8000,
+                        false
+                    );
+                    if (synced) {
+                        item = await Product.view(query);
+                        if (!item) {
+                            return res.error("INVALID_PRODUCT_ID");
+                        }
                     }
+                } catch (syncErr) {
+                    console.warn(`[product-view] supplier sync skipped for ${productId}:`, syncErr?.message || syncErr);
                 }
             } else if (shouldRefreshSupplierProduct(req.product)) {
                 syncSupplierProductInBackground(req.product);
@@ -1147,11 +1186,16 @@ module.exports = {
                 });
             }
 
-            const [enrichedItem, sameCategoryProducts] = await Promise.all([
+            const [enrichedItem, similarProducts, sameCategoryProducts] = await Promise.all([
                 withPromiseTimeout(
                     enrichProductReviewsAndRatings(item),
                     5000,
                     item
+                ),
+                withPromiseTimeout(
+                    getSimilarProducts(productId, { limit: 8 }),
+                    6000,
+                    []
                 ),
                 withPromiseTimeout(
                     loadSameCategoryProducts(item, 12),
@@ -1160,9 +1204,10 @@ module.exports = {
                 ),
             ]);
             item = enrichedItem;
-            item.sameCategoryProducts = Array.isArray(sameCategoryProducts)
-                ? sameCategoryProducts
-                : [];
+            item.sameCategoryProducts = mergeUniqueProductRows(
+                similarProducts,
+                sameCategoryProducts
+            ).slice(0, 12);
 
             await priceExchange(item, req.exchangeRate);
             if (item.sameCategoryProducts.length) {
@@ -1420,7 +1465,7 @@ module.exports = {
                     endImageSearch();
                 }
 
-                const items = visibleCatalogItems(result.items || [], { search: String(search || "").trim() });
+                const items = visibleImageSearchItems(result.items || []);
                 const recommendations = visibleCatalogItems(result.recommendations || [], { maxSensitive: 0 });
                 const categoryData = await safeCategoryById(category);
                 await safePriceExchange(items, req.exchangeRate);
@@ -1435,14 +1480,17 @@ module.exports = {
                 return res.success(req.nextPageOptions(
                     items,
                     result.total || items.length,
-                    buildImageSearchListMeta(result, {
-                        category: categoryData,
-                        imageUrl,
-                        smartListing: result.smartListing || null,
-                        smartListingAttributes: vision.attributes || result.smartListing?.attributes || null,
-                        recommendations,
-                        smartRecommendations: recommendations.length > 0,
-                    })
+                    {
+                        hasMore: Boolean(result.total > pageNum * limit),
+                        ...buildImageSearchListMeta(result, {
+                            category: categoryData,
+                            imageUrl,
+                            smartListing: result.smartListing || null,
+                            smartListingAttributes: vision.attributes || result.smartListing?.attributes || null,
+                            recommendations,
+                            smartRecommendations: recommendations.length > 0,
+                        }),
+                    }
                 ));
             }
 
@@ -1688,7 +1736,7 @@ module.exports = {
                 country,
             });
 
-            const items = visibleCatalogItems(result.items || []);
+            const items = visibleImageSearchItems(result.items || []);
             const recommendations = visibleCatalogItems(result.recommendations || []);
             await safePriceExchange(items, req.exchangeRate);
             if (recommendations.length) {
@@ -1719,6 +1767,7 @@ module.exports = {
             }
 
             return res.success(req.nextPageOptions(items, result.total || items.length, {
+                hasMore: Boolean((result.total || items.length) > Math.max(1, Math.floor((skip || 0) / limit) + 1) * limit),
                 ...buildImageSearchListMeta(result, {
                     imageUrl,
                     smartListing: result.smartListing || null,

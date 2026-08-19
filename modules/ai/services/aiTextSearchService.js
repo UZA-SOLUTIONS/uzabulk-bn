@@ -423,7 +423,7 @@ const expandSearchQuery = async (search = "", context = {}, { fast = false } = {
             messages: [{
                 role: "user",
                 content: [
-                    "You help B2B wholesale buyers search UZA Bulk (1688-sourced catalog).",
+                    "You help B2B wholesale buyers search the UZA Bulk local catalog.",
                     `User typed: "${baseline.original}"`,
                     ...(contextLines.length ? ["", ...contextLines] : []),
                     "Understand WHAT product they need, even if catalog titles use different wording.",
@@ -435,7 +435,9 @@ const expandSearchQuery = async (search = "", context = {}, { fast = false } = {
                     "Examples: bottles -> water bottles; cups -> drinking cups; bags -> tote/handbags;",
                     "lights -> LED lights; chairs -> office chairs; watches -> smart watches;",
                     "green t-shirt -> green cotton t-shirt / tee (apparel only).",
-                    "Use shopper history only when it clearly matches the same intent.",
+                    "Use shopper history only when it clearly matches the same intent and product family.",
+                    "Never let past searches override the current product family.",
+                    "Do not drift across families such as footwear vs apparel, lighting vs apparel, or bags vs drinkware.",
                     "Put the preferred/common subtype first in primary, exact_phrase, and keywords.",
                     "Return JSON only (no markdown):",
                     "{",
@@ -449,7 +451,7 @@ const expandSearchQuery = async (search = "", context = {}, { fast = false } = {
                     "}",
                     "corrected_query = fixed spelling of what user meant (same language as input).",
                     "primary = best short English wholesale search phrase (2-5 words).",
-                    "keywords = up to 8 variants: synonyms, plural/singular, material, color, category.",
+                    "keywords = up to 8 variants: synonyms, plural/singular, material, color, category; keep them in the same product family.",
                     "exact_phrase = phrase most likely to match product title exactly.",
                     "user_intent = one short sentence describing the product look/need for visual similarity matching.",
                     "category_hint = apparel|lighting|footwear|bags|drinkware|eyewear|electronics|furniture|stationery|health or empty.",

@@ -23,19 +23,12 @@ const CATALOG_BATCH_LIMIT = Math.min(
     800
 );
 const REMOTE_MONGO_SEARCH = String(process.env.SEARCH_REMOTE_MONGO ?? "true").toLowerCase() !== "false";
-/** 1688 text-search fallback is off by default — catalog + ES only. Set SEARCH_INCLUDE_1688=true to enable. */
-const SEARCH_INCLUDE_1688 = String(process.env.SEARCH_INCLUDE_1688 ?? "false").toLowerCase() === "true";
 /** Image search uses local Elasticsearch when available (same index as text search). */
 const IMAGE_SEARCH_USE_ES = String(process.env.IMAGE_SEARCH_USE_ELASTICSEARCH ?? "true").toLowerCase() !== "false";
 const IMAGE_SEARCH_ES_MAX_NEEDLES = Math.min(
     Math.max(Number(process.env.IMAGE_SEARCH_ES_MAX_NEEDLES || 3), 1),
     5
 );
-const ALIBABA_SEARCH_TIMEOUT_MS = Math.min(
-    Math.max(Number(process.env.SEARCH_ALIBABA_TIMEOUT_MS || 6000), 3000),
-    12000
-);
-
 const listProjection = {
     name: 1,
     price: 1,
@@ -687,21 +680,6 @@ const searchMongoCatalog = async (raw, terms, { limit = 32, category } = {}) => 
     return rankSearchResults(merged, terms, variants).slice(0, limit);
 };
 
-const searchAlibabaFallback = async ({ terms, variants, limit, skip }) => {
-    const primaryKeyword = terms.primary || terms.correctedQuery || terms.original || "";
-    if (!primaryKeyword) return [];
-
-    const { searchAlibabaCatalogByKeywords } = require("../helper/imageSearchPipeline");
-    return safeQuery(
-        searchAlibabaCatalogByKeywords({
-            primaryKeyword,
-            keywords: variants,
-            pageLimit: limit,
-            pageSkip: Math.max(1, Number(skip) || 1),
-        })
-    );
-};
-
 const unwrapEsSearchResult = (result) => {
     if (Array.isArray(result)) return { items: result, total: 0 };
     return {
@@ -914,20 +892,6 @@ const searchCatalogByText = async ({
         });
         if (mongoItems.length && engine !== "elasticsearch") engine = "mongo_fallback";
         else if (mongoItems.length && engine === "elasticsearch") engine = "elasticsearch+mongo";
-    }
-
-    if (!skipExternal && !fast && SEARCH_INCLUDE_1688 && merged.length < 3) {
-        const alibabaItems = await searchAlibabaFallback({ terms, variants, limit, skip });
-        if (alibabaItems.length) {
-            const seen = new Set(merged.map(itemKey));
-            alibabaItems.forEach((item) => {
-                const key = itemKey(item);
-                if (!key || seen.has(key)) return;
-                seen.add(key);
-                merged.push(item);
-            });
-            engine = engine === "elasticsearch" ? "elasticsearch+alibaba" : `${engine}+alibaba`;
-        }
     }
 
     const ranked = rankSearchResults(merged, terms, variants);

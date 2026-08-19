@@ -8,7 +8,10 @@ const ASSISTANT_MODEL = () =>
     || "qwen-turbo";
 
 const CONTEXT_CHAR_LIMIT = () =>
-    Math.min(Math.max(Number(process.env.BUYER_ASSISTANT_CONTEXT_CHARS || 420), 200), 900);
+    Math.min(Math.max(Number(process.env.BUYER_ASSISTANT_CONTEXT_CHARS || 1000), 250), 1400);
+
+const HISTORY_MESSAGE_LIMIT = () =>
+    Math.min(Math.max(Number(process.env.BUYER_ASSISTANT_HISTORY_MESSAGES || 8), 2), 12);
 
 const buildSystemPrompt = (language, {
     hasProducts = false,
@@ -142,7 +145,7 @@ const generateBuyerResponse = async ({
     const productChunks = chunks.filter((c) => c.source === "product_docs");
     const contextBlock = formatContextBlock(chunks);
     const historyMessages = (conversationHistory || [])
-        .slice(-4)
+        .slice(-HISTORY_MESSAGE_LIMIT())
         .map((m) => ({
             role: m.role === "assistant" ? "assistant" : "user",
             content: m.content,
@@ -178,7 +181,7 @@ const generateBuyerResponse = async ({
         model: ASSISTANT_MODEL(),
         messages,
         temperature: 0.3,
-        max_tokens: Math.min(Number(process.env.BUYER_ASSISTANT_MAX_TOKENS || 550), 900),
+        max_tokens: Math.min(Number(process.env.BUYER_ASSISTANT_MAX_TOKENS || 800), 1000),
     });
 
     const parsed = parseAssistantOutput(content);

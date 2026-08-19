@@ -101,9 +101,10 @@ const buildAssistantActions = ({
             });
             if (/checkout|check\s*out|pay/.test(q) && count > 0 && isLoggedIn) {
                 push({
-                    type: "chat",
-                    label: "Continue checkout",
-                    message: "Help me checkout",
+                    type: "navigate",
+                    label: "Go to checkout",
+                    route: "CHECKOUT",
+                    closeAssistant: true,
                 });
             }
         }

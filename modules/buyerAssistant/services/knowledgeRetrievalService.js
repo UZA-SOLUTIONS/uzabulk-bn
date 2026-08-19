@@ -81,8 +81,6 @@ const fetchOrderForUser = async ({ orderRef, userId, deviceId }) => {
     const orClauses = [
         { customOrderId: new RegExp(`^${orderRef.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") },
         { orderGroupId: orderRef },
-        { "alibaba1688.third_order_id": orderRef },
-        { "alibaba1688.primary_order_id": orderRef },
     ];
 
     if (isValidObjectId(orderRef)) {
@@ -116,8 +114,8 @@ const buildOrderChunk = async (order) => {
     ].filter((line) => !line.endsWith(": ") && !line.endsWith(": undefined"));
 
     const ali = order.alibaba1688 || {};
-    if (ali.status) lines.push(`1688 status: ${ali.status}`);
-    if (ali.primary_order_id) lines.push(`1688 order: ${ali.primary_order_id}`);
+    if (ali.status) lines.push(`Supplier sync status: ${ali.status}`);
+    if (ali.primary_order_id) lines.push(`Supplier reference: ${ali.primary_order_id}`);
 
     if (Array.isArray(ali.logistics) && ali.logistics.length) {
         const latest = ali.logistics[0];
@@ -152,6 +150,35 @@ const fetchBuyerChunks = async ({ userId, deviceId }) => {
     return cartChunk ? [cartChunk] : [];
 };
 
+const buildPageContextChunk = (pageContext = {}) => {
+    if (!pageContext || typeof pageContext !== "object") return null;
+    const pathname = String(pageContext.pathname || "").trim();
+    const search = String(pageContext.search || "").trim();
+    const pageSearchQuery = String(pageContext.searchQuery || "").trim();
+    const productId = String(pageContext.productId || "").trim();
+    const orderId = String(pageContext.orderId || "").trim();
+
+    const lines = [
+        pathname ? `Path: ${pathname}` : "",
+        search ? `Query string: ${search}` : "",
+        pageSearchQuery ? `Page search query: ${pageSearchQuery}` : "",
+        productId ? `Current product id: ${productId}` : "",
+        orderId ? `Current order id: ${orderId}` : "",
+    ].filter(Boolean);
+
+    if (!lines.length) return null;
+
+    return {
+        source: "page_context",
+        title: "Current storefront page",
+        text: lines.join("\n"),
+        score: 1.6,
+    };
+};
+
+const isVagueFollowUp = (query = "") =>
+    /\b(it|that|this|same|those|the order|my order|that one|this one|last order|previous order)\b/i.test(String(query || ""));
+
 const retrieveKnowledge = async ({
     query,
     queryVector,
@@ -159,11 +186,23 @@ const retrieveKnowledge = async ({
     deviceId,
     productId,
     orderRef: explicitOrderRef,
+    pageContext,
+    sessionContext = {},
     limit,
 } = {}) => {
     const run = async () => {
-        const orderRef = explicitOrderRef || extractOrderRef(query);
-        const productFinding = isProductFindingQuery(query, productId)
+        const vagueFollowUp = isVagueFollowUp(query);
+        const effectivePageContext = (pageContext && Object.keys(pageContext).length)
+            ? pageContext
+            : (vagueFollowUp ? sessionContext.lastPageContext : null);
+        const orderRef = explicitOrderRef
+            || extractOrderRef(query)
+            || (vagueFollowUp ? String(sessionContext.lastOrderRef || "").trim() : "");
+        const resolvedProductId = productId
+            || effectivePageContext?.productId
+            || (vagueFollowUp ? String(sessionContext.lastProductId || "").trim() : "")
+            || "";
+        const productFinding = isProductFindingQuery(query, resolvedProductId)
             && !isAccountIntentQuery(query);
         const chunks = [];
 
@@ -181,7 +220,7 @@ const retrieveKnowledge = async ({
             resolveProductChunksForQuery({
                 query,
                 queryVector,
-                productId,
+                productId: resolvedProductId,
                 vectorSearchFn,
                 limit: productLimit,
             }),
@@ -209,6 +248,9 @@ const retrieveKnowledge = async ({
 
         const orderChunk = await buildOrderChunk(order);
         if (orderChunk && !productFinding) chunks.push(orderChunk);
+
+        const pageContextChunk = buildPageContextChunk(effectivePageContext);
+        if (pageContextChunk) chunks.push(pageContextChunk);
 
         if (order && !productFinding) {
             const lineItemsChunk = buildOrderLineItemsChunk(order);
@@ -254,7 +296,7 @@ const retrieveKnowledge = async ({
             orderRef: orderRef || null,
             orderFound: Boolean(order),
             orderId: order?._id ? String(order._id) : null,
-            productId: productId || null,
+            productId: resolvedProductId || null,
             isLoggedIn: Boolean(userId),
             productFinding,
         };

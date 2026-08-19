@@ -13,7 +13,7 @@ const path = require("path");
 
 const { searchGoogleImageKeywords } = require("../services/googleImageSearch");
 
-const { searchLocalImage, searchLocalImageLive, isLocalImageSearchEnabled } = require("../services/localImageSearch");
+const { searchLocalImage, searchLocalImageLive, isLocalImageSearchEnabled, ensurePythonRuntime } = require("../services/localImageSearch");
 
 const {
 
@@ -478,6 +478,10 @@ const runLocalVisualSearch = async ({ imageAddress, pageLimit = 32 } = {}) => {
     }
 
     if (!liveEnabled || !isMongoConnected()) {
+        return null;
+    }
+
+    if (!(await ensurePythonRuntime())) {
         return null;
     }
 

@@ -32,8 +32,30 @@ const WEAK_TOKENS = new Set([
     "cotton", "silicone", "metal", "plastic", "leather", "solid", "basic", "modern",
     "standard", "smooth", "soft", "color", "colour", "style",
 ]);
+const AMBIGUOUS_IDENTITY_TOKENS = new Set([
+    "men", "mens", "man", "women", "womens", "woman",
+    "black", "white", "brown", "blue", "red", "green", "yellow", "pink", "purple",
+    "gold", "silver", "gray", "grey", "leather", "dress", "casual", "formal",
+    "style", "design", "fashion",
+]);
+const FOOTWEAR_ANCHOR_TOKENS = new Set([
+    "shoe", "shoes", "loafer", "loafers", "oxford", "oxfords", "brogue", "brogues",
+    "wingtip", "boot", "boots", "sneaker", "sneakers", "slipper", "slippers",
+    "sandal", "sandals", "footwear", "heel", "heels",
+]);
 
-const extractNamePhrases = (name = "", identityTokens = new Set()) => {
+const resolveIdentityAnchors = (identityTokens = new Set()) => {
+    const anchors = new Set(
+        [...identityTokens].filter((word) => !WEAK_TOKENS.has(word) && !AMBIGUOUS_IDENTITY_TOKENS.has(word))
+    );
+    if ([...anchors].some((word) => FOOTWEAR_ANCHOR_TOKENS.has(word))) {
+        FOOTWEAR_ANCHOR_TOKENS.forEach((word) => anchors.add(word));
+        anchors.delete("dress");
+    }
+    return anchors;
+};
+
+const extractNamePhrases = (name = "", identityTokens = new Set(), identityAnchors = new Set()) => {
     const words = tokenize(name).filter((word) => !STOP_WORDS.has(word));
     const phrases = new Set();
     if (words.length >= 2) phrases.add(words.slice(0, 2).join(" "));
@@ -44,6 +66,9 @@ const extractNamePhrases = (name = "", identityTokens = new Set()) => {
     if (!identityTokens.size) return [...phrases];
     return [...phrases].filter((phrase) => {
         const phraseWords = phrase.split(" ");
+        if (identityAnchors.size) {
+            return phraseWords.some((word) => identityAnchors.has(word));
+        }
         return phraseWords.some((word) => identityTokens.has(word));
     });
 };
@@ -108,6 +133,7 @@ const expandNeedlesFromLiveCatalog = async ({
             ...tokenize(searchPhrase),
         ].filter((token) => !STOP_WORDS.has(token) && !WEAK_TOKENS.has(token))
     );
+    const identityAnchors = resolveIdentityAnchors(identityTokens);
 
     const seen = new Set(
         (needles || []).map((needle) => normalizeTerm(needle)).filter(Boolean)
@@ -120,6 +146,7 @@ const expandNeedlesFromLiveCatalog = async ({
         // Must keep identity overlap — prevents "olive" → "olive fruit powder".
         if (identityTokens.size) {
             const words = distilled.split(" ");
+            if (identityAnchors.size && !words.some((word) => identityAnchors.has(word))) return;
             if (!words.some((word) => identityTokens.has(word))) return;
         }
         seen.add(distilled);
@@ -138,7 +165,7 @@ const expandNeedlesFromLiveCatalog = async ({
             const names = await fetchCatalogNamesForToken(token);
             names.forEach((name) => {
                 if (extra.length >= maxExtra) return;
-                extractNamePhrases(name, identityTokens).forEach(add);
+                extractNamePhrases(name, identityTokens, identityAnchors).forEach(add);
             });
         } catch (error) {
             console.warn(`[catalog-vocab-live] token="${token}" failed:`, error?.message || error);
