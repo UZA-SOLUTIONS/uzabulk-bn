@@ -14,7 +14,7 @@ const isFastMode = () =>
     String(process.env.BUYER_ASSISTANT_FAST_MODE ?? "true").toLowerCase() !== "false";
 
 const embeddingsEnabled = () =>
-    String(process.env.BUYER_ASSISTANT_EMBEDDINGS ?? "true").toLowerCase() !== "false";
+    String(process.env.BUYER_ASSISTANT_EMBEDDINGS ?? "false").toLowerCase() === "true";
 
 const vectorSearchEnabled = () =>
     String(process.env.BUYER_ASSISTANT_VECTOR_SEARCH ?? "false").toLowerCase() === "true";

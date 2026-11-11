@@ -158,7 +158,7 @@ const rerankImageSearchItems = async (items = [], vision = null) => {
     const primaryKeyword = vision?.primaryKeyword || vision?.searchPhrase || "";
 
     const enriched = await enrichItemsWithCategoryNames(items);
-    const semanticEnabled = String(process.env.IMAGE_SEARCH_METADATA_SEMANTIC ?? "true").toLowerCase() !== "false";
+    const semanticEnabled = String(process.env.IMAGE_SEARCH_METADATA_SEMANTIC ?? "false").toLowerCase() === "true";
     const queryPhrase = String(vision?.searchPhrase || vision?.primaryKeyword || "").trim();
     const queryVector = semanticEnabled ? await getQueryVector(queryPhrase) : null;
 

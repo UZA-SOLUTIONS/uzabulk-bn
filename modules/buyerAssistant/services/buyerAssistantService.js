@@ -42,7 +42,7 @@ const useGroundedTemplates = () =>
     String(process.env.BUYER_ASSISTANT_USE_GROUNDED_TEMPLATES ?? "false").toLowerCase() === "true";
 
 const isEnabled = () =>
-    String(process.env.BUYER_ASSISTANT_ENABLED ?? "true").toLowerCase() !== "false";
+    String(process.env.BUYER_ASSISTANT_ENABLED ?? "false").toLowerCase() === "true";
 
 const SUPPORT_WHATSAPP_DISPLAY = process.env.SUPPORT_WHATSAPP_DISPLAY || "0788 371 081";
 

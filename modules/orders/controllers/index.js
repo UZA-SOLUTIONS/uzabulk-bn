@@ -225,7 +225,7 @@ module.exports = {
                 })),
             };
 
-            if (String(process.env.RECOMMENDATION_ENGINE_ENABLED ?? "true").toLowerCase() !== "false") {
+            if (String(process.env.RECOMMENDATION_ENGINE_ENABLED ?? "false").toLowerCase() === "true") {
                 try {
                     const cartProductIds = [];
                     (checkout.line_items || []).forEach((line) => {

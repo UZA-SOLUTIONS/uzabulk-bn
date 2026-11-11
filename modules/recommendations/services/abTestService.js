@@ -1,8 +1,8 @@
 const crypto = require("crypto");
 
 const AB_TEST_ENABLED = () => {
-    const flag = String(process.env.RECOMMENDATION_AB_TEST ?? "true").toLowerCase();
-    return flag !== "0" && flag !== "false";
+    const flag = String(process.env.RECOMMENDATION_AB_TEST ?? "false").toLowerCase();
+    return flag === "1" || flag === "true";
 };
 
 const TREATMENT_RATIO = () => {

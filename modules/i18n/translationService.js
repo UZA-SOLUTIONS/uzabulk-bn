@@ -1,3 +1,4 @@
+const { isDashscopeConfigured } = require("../ai/dashscopeClient");
 const { chatCompletionWithFallback } = require("../ai/services/chatWithFallback");
 const { redisMGet, redisMSet } = require("./redisCache");
 const {
@@ -11,6 +12,14 @@ const TRANSLATION_MODEL = () =>
     || process.env.DASHSCOPE_ASSISTANT_MODEL
     || "qwen-turbo";
 
+const isTranslationEnabled = () => {
+    if (!isDashscopeConfigured()) return false;
+    const flag = String(
+        env?.dashscope?.TRANSLATION_ENABLED ?? process.env.DASHSCOPE_TRANSLATION_ENABLED ?? "false"
+    ).toLowerCase();
+    return flag !== "0" && flag !== "false";
+};
+
 /**
  * Translate a batch of UI strings to French using DashScope.
  * @param {Record<string, string>} entries - key → English text
@@ -19,6 +28,7 @@ const TRANSLATION_MODEL = () =>
 const translateAttributeEntriesToFrench = async (entries = {}) => {
     const keys = Object.keys(entries);
     if (!keys.length) return {};
+    if (!isTranslationEnabled()) return {};
 
     const payload = JSON.stringify(entries, null, 2);
     const { content } = await chatCompletionWithFallback({
@@ -52,6 +62,7 @@ const translateAttributeEntriesToFrench = async (entries = {}) => {
 const translateAttributeEntriesToEnglish = async (entries = {}) => {
     const keys = Object.keys(entries);
     if (!keys.length) return {};
+    if (!isTranslationEnabled()) return {};
 
     const payload = JSON.stringify(entries, null, 2);
     const { content } = await chatCompletionWithFallback({
@@ -85,6 +96,7 @@ const translateAttributeEntriesToEnglish = async (entries = {}) => {
 const translateEntriesToFrench = async (entries = {}) => {
     const keys = Object.keys(entries);
     if (!keys.length) return {};
+    if (!isTranslationEnabled()) return {};
 
     const attributeLike = keys.every((key) => /^(txt_[lv]_|fa_[nv]_|var_[at]_)/.test(key));
     if (attributeLike) {
@@ -122,6 +134,7 @@ const translateEntriesToFrench = async (entries = {}) => {
 const translateEntriesToEnglish = async (entries = {}) => {
     const keys = Object.keys(entries);
     if (!keys.length) return {};
+    if (!isTranslationEnabled()) return {};
 
     const attributeLike = keys.every((key) => /^(txt_[lv]_|fa_[nv]_|var_[at]_)/.test(key));
     if (attributeLike) {
@@ -167,6 +180,7 @@ const translateEntriesForLang = async (entries = {}, targetLang = "fr") => {
 const translateTextToFrench = async (text = "") => {
     const input = String(text || "").trim();
     if (!input) return "";
+    if (!isTranslationEnabled()) return "";
 
     const { content } = await chatCompletionWithFallback({
         model: TRANSLATION_MODEL(),
@@ -248,6 +262,7 @@ const translateProductNamesToFrench = async (items = []) => {
     toTranslateFiltered.forEach(i => toTranslate.push(i));
 
     if (!toTranslate.length) return result;
+    if (!isTranslationEnabled()) return result;
 
     const entries = {};
     toTranslate.forEach((item) => {
@@ -327,6 +342,7 @@ const getCachedDetailFields = (productId, fields = {}, targetLang = "fr") => {
 const translateHtmlDescriptionForLang = async (html = "", targetLang = "fr") => {
     const input = String(html || "").trim().slice(0, MAX_DESCRIPTION_CHARS);
     if (!input) return "";
+    if (!isTranslationEnabled()) return "";
 
     const langLabel = targetLang === "en" ? "English" : "French";
     const { content } = await chatCompletionWithFallback({
@@ -420,6 +436,7 @@ const translateProductDetailFieldsToFrench = async (productId, fields = {}, targ
     translateProductDetailFields(productId, fields, targetLang);
 
 module.exports = {
+    isTranslationEnabled,
     translateEntriesToFrench,
     translateTextToFrench,
     translateProductNamesToFrench,

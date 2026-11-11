@@ -409,7 +409,7 @@ const finalizeHomeRecommendations = (products, limit) => (
 const getRecommendedProducts = async (req, options = {}) => {
     const limit = Math.max(1, Math.min(Number(options.limit) || DEFAULT_LIMIT, 100));
     const category = options.category || null;
-    const engineEnabled = String(process.env.RECOMMENDATION_ENGINE_ENABLED ?? "true").toLowerCase() !== "false";
+    const engineEnabled = String(process.env.RECOMMENDATION_ENGINE_ENABLED ?? "false").toLowerCase() === "true";
 
     if (engineEnabled && isMongoConnected() && !category) {
         try {

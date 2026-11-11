@@ -12,11 +12,19 @@ const {
 } = require("./vectorSearchService");
 const { buildPriceBandFromCny } = require("../../ai/helpers/productAttributes");
 
+/** Create/refresh vectors only when an embedding consumer feature is on. */
+const isProductEmbeddingEnabled = () => {
+    if (!isDashscopeConfigured()) return false;
+    const autoRecs = String(env?.dashscope?.AUTO_RECOMMENDATIONS ?? "false").toLowerCase();
+    if (autoRecs !== "0" && autoRecs !== "false") return true;
+    return String(process.env.SEARCH_EMBEDDING_BOOST ?? "false").toLowerCase() === "true";
+};
+
 /**
  * Compute and persist embedding for one product (background-safe).
  */
 const ensureProductEmbedding = async (productId, { force = false } = {}) => {
-    if (!isDashscopeConfigured() || !isMongoConnected()) return null;
+    if (!isProductEmbeddingEnabled() || !isMongoConnected()) return null;
 
     const product = await Product.findById(productId)
         .select("name short_description description categories pricingType embedding embedding_updated_at status meta_data seoSettings")
@@ -67,7 +75,7 @@ const getSimilarProducts = async (productId, {
 
     let queryVector = source.embedding;
     if (!Array.isArray(queryVector) || !queryVector.length) {
-        if (!isDashscopeConfigured()) return [];
+        if (!isProductEmbeddingEnabled()) return [];
         try {
             queryVector = await ensureProductEmbedding(productId);
         } catch (error) {
@@ -152,7 +160,7 @@ const getComplementaryProducts = async (productId, { limit = 8 } = {}) => {
     const sourceKeys = categoryKeySet(source);
     let queryVector = source.embedding;
     if (!Array.isArray(queryVector) || !queryVector.length) {
-        if (isDashscopeConfigured()) {
+        if (isProductEmbeddingEnabled()) {
             try {
                 queryVector = await ensureProductEmbedding(productId);
             } catch (error) {
@@ -204,7 +212,7 @@ const getComplementaryProducts = async (productId, { limit = 8 } = {}) => {
  */
 const searchByAttributeEmbedding = async (attributes, filters = {}, { limit = 10 } = {}) => {
     const text = buildAttributesEmbeddingText(attributes);
-    if (!text || !isDashscopeConfigured()) return [];
+    if (!text || !isProductEmbeddingEnabled()) return [];
 
     const queryVector = await getEmbedding(text.slice(0, 2000));
     return searchProductsByVector(queryVector, filters, { limit, minScore: 0.15 });
@@ -214,7 +222,7 @@ const searchByAttributeEmbedding = async (attributes, filters = {}, { limit = 10
  * Batch backfill embeddings for catalog (cron / script).
  */
 const backfillProductEmbeddings = async ({ limit = 50, force = false } = {}) => {
-    if (!isDashscopeConfigured() || !isMongoConnected()) {
+    if (!isProductEmbeddingEnabled() || !isMongoConnected()) {
         return { processed: 0, skipped: true };
     }
 

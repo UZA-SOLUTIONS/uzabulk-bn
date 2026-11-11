@@ -10,7 +10,7 @@ const { searchProductsByVector } = require("./vectorSearchService");
 const { normalizeTerm } = require("../../ai/services/aiTextSearchService");
 
 const EMBEDDING_BOOST_ENABLED =
-    String(process.env.SEARCH_EMBEDDING_BOOST ?? "true").toLowerCase() !== "false";
+    String(process.env.SEARCH_EMBEDDING_BOOST ?? "false").toLowerCase() === "true";
 const EMBEDDING_TIMEOUT_MS = Math.min(
     Math.max(Number(process.env.SEARCH_EMBEDDING_TIMEOUT_MS || 1800), 600),
     4000

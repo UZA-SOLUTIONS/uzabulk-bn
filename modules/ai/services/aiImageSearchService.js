@@ -18,7 +18,7 @@ const getBuildImageSearchCatalogNeedles = () =>
 const isAiImageSearchEnabled = () => {
     if (!isDashscopeConfigured()) return false;
     const dashscope = (typeof env !== "undefined" ? env : global.env || {})?.dashscope || {};
-    const flag = String(dashscope.AI_IMAGE_SEARCH ?? dashscope.AI_SEARCH ?? "true").toLowerCase();
+    const flag = String(dashscope.AI_IMAGE_SEARCH ?? dashscope.AI_SEARCH ?? "false").toLowerCase();
     return flag !== "0" && flag !== "false";
 };
 

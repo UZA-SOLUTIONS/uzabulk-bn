@@ -10,7 +10,7 @@ const INTENT_EVENTS = new Set(["view", "add_to_cart", "update_cart", "checkout",
 
 const isAutoRecommendationsEnabled = () => {
     if (!isDashscopeConfigured()) return false;
-    const flag = String(env?.dashscope?.AUTO_RECOMMENDATIONS ?? "true").toLowerCase();
+    const flag = String(env?.dashscope?.AUTO_RECOMMENDATIONS ?? "false").toLowerCase();
     return flag !== "0" && flag !== "false";
 };
 

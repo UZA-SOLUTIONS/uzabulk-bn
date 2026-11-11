@@ -31,7 +31,11 @@ const {
     buildCatalogSeedKey,
     trackProductBehavior,
 } = require('../services/recommendationService');
-const { runSmartListing, analyzeProductImage: analyzeImageAi } = require('../../ai/services/smartListingService');
+const {
+    runSmartListing,
+    analyzeProductImage: analyzeImageAi,
+    isSmartListingEnabled,
+} = require('../../ai/services/smartListingService');
 const { getSimilarProducts } = require('../services/similarProductsService');
 const { searchCatalogByText } = require('../services/catalogSearchService');
 const {
@@ -1651,6 +1655,9 @@ module.exports = {
      */
     smartListing: async (req, res) => {
         try {
+            if (!isSmartListingEnabled()) {
+                return res.success("SMART_LISTING_DISABLED", { skipped: true, reason: "disabled" });
+            }
             const { imageUrl, sourcePriceCNY } = req.body || {};
             if (!imageUrl || !String(imageUrl).trim()) {
                 return res.error("IMAGE_URL_REQUIRED");
@@ -1659,6 +1666,9 @@ module.exports = {
                 imageUrl: String(imageUrl).trim(),
                 sourcePriceCNY,
             });
+            if (result?.skipped) {
+                return res.success("SMART_LISTING_DISABLED", result);
+            }
             return res.success("SMART_LISTING_GENERATED", result);
         } catch (error) {
             console.error("smartListing", error);
@@ -1669,11 +1679,17 @@ module.exports = {
     /** Step 1 only — vision attribute extraction. */
     analyzeProductImage: async (req, res) => {
         try {
+            if (!isSmartListingEnabled()) {
+                return res.success("SMART_LISTING_DISABLED", { skipped: true, reason: "disabled" });
+            }
             const { imageUrl } = req.body || {};
             if (!imageUrl || !String(imageUrl).trim()) {
                 return res.error("IMAGE_URL_REQUIRED");
             }
             const attributes = await analyzeImageAi(String(imageUrl).trim());
+            if (attributes?.skipped) {
+                return res.success("SMART_LISTING_DISABLED", attributes);
+            }
             return res.success("IMAGE_ANALYZED", { attributes });
         } catch (error) {
             console.error("analyzeProductImage", error);

@@ -4,7 +4,7 @@ const { chatCompletionWithFallback } = require("./chatWithFallback");
 
 const isAiTextSearchEnabled = () => {
     if (!isDashscopeConfigured()) return false;
-    const flag = String(env?.dashscope?.AI_TEXT_SEARCH ?? env?.dashscope?.AI_SEARCH ?? "true").toLowerCase();
+    const flag = String(env?.dashscope?.AI_TEXT_SEARCH ?? env?.dashscope?.AI_SEARCH ?? "false").toLowerCase();
     return flag !== "0" && flag !== "false";
 };
 

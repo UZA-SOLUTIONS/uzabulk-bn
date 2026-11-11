@@ -12,6 +12,13 @@ const {
 const VL_MODEL = () => getVisionModel();
 const TEXT_MODEL = () => getConfiguredChatModel();
 
+/** Shared gate for manual + auto smart listing (defaults off). */
+const isSmartListingEnabled = () => {
+    if (!isDashscopeConfigured()) return false;
+    const flag = String(env?.dashscope?.AUTO_SMART_LISTING ?? "false").toLowerCase();
+    return flag !== "0" && flag !== "false";
+};
+
 const BUYER_VL_PROMPT = (targetMarket = "East Africa wholesale buyers") => [
     "You are a product attribute extractor. Return ONLY valid JSON, no prose.",
     "Schema:",
@@ -35,8 +42,8 @@ const BUYER_VL_PROMPT = (targetMarket = "East Africa wholesale buyers") => [
  * @param {{ targetMarket?: string }} options
  */
 const analyzeProductImage = async (imageUrl, { targetMarket = "East Africa wholesale buyers" } = {}) => {
-    if (!isDashscopeConfigured()) {
-        throw new Error("DASHSCOPE_API_KEY is not configured");
+    if (!isSmartListingEnabled()) {
+        return { skipped: true, reason: "disabled" };
     }
     const url = String(imageUrl || "").trim();
     if (!url) throw new Error("imageUrl is required");
@@ -65,8 +72,11 @@ const analyzeProductImage = async (imageUrl, { targetMarket = "East Africa whole
  * @param {object|number} sourceContext — listing context or legacy sourcePriceCNY number
  */
 const generateListing = async (attributes, sourceContext = {}) => {
-    if (!isDashscopeConfigured()) {
-        throw new Error("DASHSCOPE_API_KEY is not configured");
+    if (!isSmartListingEnabled()) {
+        return { skipped: true, reason: "disabled" };
+    }
+    if (attributes?.skipped) {
+        return { skipped: true, reason: attributes.reason || "disabled" };
     }
 
     const context = typeof sourceContext === "number" || typeof sourceContext === "string"
@@ -120,6 +130,9 @@ const generateListing = async (attributes, sourceContext = {}) => {
  * Full smart-listing pipeline: image → attributes → listing JSON.
  */
 const runSmartListing = async ({ imageUrl, sourcePriceCNY, sourceContext = {} } = {}) => {
+    if (!isSmartListingEnabled()) {
+        return { skipped: true, reason: "disabled", attributes: null, listing: null };
+    }
     const context = buildListingSourceContext({
         ...sourceContext,
         sourcePriceCNY: sourceContext.sourcePriceCNY ?? sourcePriceCNY,
@@ -127,7 +140,13 @@ const runSmartListing = async ({ imageUrl, sourcePriceCNY, sourceContext = {} } 
     const attributes = await analyzeProductImage(imageUrl, {
         targetMarket: context.targetMarkets || TARGET_MARKETS_DEFAULT,
     });
+    if (attributes?.skipped) {
+        return { skipped: true, reason: attributes.reason || "disabled", attributes: null, listing: null };
+    }
     const listing = await generateListing(attributes, context);
+    if (listing?.skipped) {
+        return { skipped: true, reason: listing.reason || "disabled", attributes, listing: null };
+    }
     return {
         attributes,
         listing,
@@ -142,5 +161,6 @@ module.exports = {
     analyzeProductImage,
     generateListing,
     runSmartListing,
+    isSmartListingEnabled,
     isDashscopeConfigured,
 };

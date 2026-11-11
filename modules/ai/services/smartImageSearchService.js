@@ -31,10 +31,11 @@ const {
 const { getEmbedding, cosineSimilarity } = require("./embeddingService");
 const { getSimilarProducts } = require("../../products/services/similarProductsService");
 
+/** Master for DashScope legs inside image search (VL / embeddings). Local pHash stays separate. */
 const isSmartImageSearchEnabled = () => {
     if (!isDashscopeConfigured()) return false;
-    const flag = String(process.env.DASHSCOPE_SMART_IMAGE_SEARCH ?? "true").toLowerCase();
-    return flag !== "0" && flag !== "false";
+    const flag = String(process.env.DASHSCOPE_SMART_IMAGE_SEARCH ?? "false").toLowerCase();
+    return flag === "1" || flag === "true";
 };
 
 const isFastImageSearchEnabled = () => {
@@ -386,7 +387,9 @@ const resolveSmartImageSearch = async ({
     const minResults = Math.min(3, pageLimit);
     const useFastPath = Boolean(fast);
     const mongoReady = isMongoConnected();
-    const embeddingPrimaryEnabled = String(process.env.IMAGE_SEARCH_EMBEDDING_PRIMARY ?? "true").toLowerCase() !== "false";
+    const smartAiEnabled = isSmartImageSearchEnabled();
+    const embeddingPrimaryEnabled = smartAiEnabled
+        && String(process.env.IMAGE_SEARCH_EMBEDDING_PRIMARY ?? "false").toLowerCase() === "true";
     const visualBudgetMs = useFastPath
         ? Math.min(VISUAL_SEARCH_BUDGET_MS, 4000)
         : VISUAL_SEARCH_BUDGET_MS;
@@ -399,7 +402,7 @@ const resolveSmartImageSearch = async ({
     let relevanceContext = buildRelevanceContext(null, []);
 
     // 1) Scan image features (VL) + visual photo match in parallel
-    const featureScanPromise = imageUrl && isAiImageSearchEnabled()
+    const featureScanPromise = imageUrl && smartAiEnabled && isAiImageSearchEnabled()
         ? withPromiseTimeout(resolveVision(imageUrl, fallbackSearch), FEATURE_SCAN_BUDGET_MS, null)
         : Promise.resolve(fallbackSearch ? visionFromFallbackSearch(fallbackSearch) : null);
 
@@ -750,7 +753,7 @@ const resolveSmartImageSearch = async ({
 
 const searchSimilarByEmbedding = async (searchPhrase, { limit = 24, excludeIds = [] } = {}) => {
     const text = String(searchPhrase || "").trim();
-    if (!text || !isDashscopeConfigured()) return [];
+    if (!text || !isSmartImageSearchEnabled()) return [];
 
     const cap = Math.max(1, Math.min(Number(limit) || 24, 48));
     const exclude = new Set((excludeIds || []).map(String));
@@ -803,7 +806,7 @@ const resolveSearchRecommendations = async (searchQuery, mainItems = [], { limit
         if (recommendations.length >= limit) break;
     }
 
-    if (recommendations.length < limit && isDashscopeConfigured()) {
+    if (recommendations.length < limit && isSmartImageSearchEnabled()) {
         const embedRecs = await searchSimilarByEmbedding(query, {
             limit: limit - recommendations.length,
             excludeIds: [...mainItems.map((i) => i._id), ...recommendations.map((r) => r._id)],

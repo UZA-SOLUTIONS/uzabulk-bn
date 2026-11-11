@@ -1,7 +1,10 @@
 const Product = require("../../../models/productsTable");
-const { isDashscopeConfigured } = require("../dashscopeClient");
 const { resolveProductImageUrl } = require("../helpers/resolveProductImageUrl");
-const { analyzeProductImage, generateListing } = require("./smartListingService");
+const {
+    analyzeProductImage,
+    generateListing,
+    isSmartListingEnabled,
+} = require("./smartListingService");
 const { ensureProductEmbedding } = require("../../products/services/similarProductsService");
 const { queueWanImageEnhancement } = require("./wanImageEnhanceService");
 const { TARGET_MARKETS_DEFAULT } = require("../helpers/productAttributes");
@@ -9,11 +12,7 @@ const { TARGET_MARKETS_DEFAULT } = require("../helpers/productAttributes");
 const META_ENRICHED_AT = "ai_smart_listing_at";
 const META_SOURCE_SUBJECT_CN = "source_subject_cn";
 
-const isAutoSmartListingEnabled = () => {
-    if (!isDashscopeConfigured()) return false;
-    const flag = String(env?.dashscope?.AUTO_SMART_LISTING ?? "true").toLowerCase();
-    return flag !== "0" && flag !== "false";
-};
+const isAutoSmartListingEnabled = () => isSmartListingEnabled();
 
 const getMetaValue = (product, key) => {
     const row = (product.meta_data || []).find((m) => m?.key === key);

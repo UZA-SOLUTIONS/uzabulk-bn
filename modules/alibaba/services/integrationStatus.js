@@ -27,9 +27,10 @@ const getIntegrationStatus = async () => {
         },
         dashscope: {
             configured: dashscopeConfigured,
-            smart_listing: dashscopeConfigured && env.dashscope.AUTO_SMART_LISTING !== "false",
-            ai_search: dashscopeConfigured && env.dashscope.AI_SEARCH !== "false",
-            recommendations: dashscopeConfigured && env.dashscope.AUTO_RECOMMENDATIONS !== "false",
+            smart_listing: dashscopeConfigured && env.dashscope.AUTO_SMART_LISTING === "true",
+            ai_search: dashscopeConfigured && env.dashscope.AI_SEARCH === "true",
+            recommendations: dashscopeConfigured && env.dashscope.AUTO_RECOMMENDATIONS === "true",
+            translation: dashscopeConfigured && env.dashscope.TRANSLATION_ENABLED === "true",
             model: env.dashscope.MODEL,
             embedding_model: env.dashscope.EMBEDDING_MODEL,
         },
